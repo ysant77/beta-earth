@@ -1,25 +1,4 @@
----
-license: cc-by-4.0
-tags:
-  - earth-observation
-  - remote-sensing
-  - sentinel-2
-  - sentinel-1
-  - embeddings
-  - model-distillation
-  - geospatial
-datasets:
-  - Major-TOM/Core-S2-L1C
-  - Major-TOM/Core-S2-L2A
-  - Major-TOM/Core-S1-RTC
-  - Major-TOM/Core-AlphaEarth-Embeddings
----
-
-# BetaEarth
-
-**Embedding Sentinel-2 and Sentinel-1 with a Little Help of AlphaEarth**
-
-*Mikolaj Czerkawski — Asterisk Labs*
+<img width="2736" height="800" alt="main" src="https://github.com/user-attachments/assets/0a343061-4efd-4fb9-9746-3ea9b19b0120" />
 
 [![arXiv](https://img.shields.io/badge/arXiv-XXXX.XXXXX-b31b1b.svg)](https://arxiv.org/abs/XXXX.XXXXX)
 [![License: CC BY 4.0](https://img.shields.io/badge/License-CC_BY_4.0-lightgrey.svg)](https://creativecommons.org/licenses/by/4.0/)
@@ -27,6 +6,8 @@ datasets:
 [![ISPRS 2026](https://img.shields.io/badge/ISPRS-2026-blue)](https://www.isprs.org)
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/asterisk-labs/beta-earth/blob/main/examples/demo.ipynb)
 [![PyPI](https://img.shields.io/pypi/v/betaearth)](https://pypi.org/project/betaearth/)
+
+**Embedding Sentinel-2 and Sentinel-1 with a Little Help of AlphaEarth**
 
 ---
 
