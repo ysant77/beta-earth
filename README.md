@@ -31,25 +31,24 @@ We release **7 model variants** spanning different trade-offs between quality, p
 
 ### Main results (200-tile test set)
 
-| Model | Test Cos Sim | Std | LULC Acc | Trainable Params | Inputs |
+| Model | Test Cos Sim | Std | LULC Acc | Model Size | Inputs |
 |---|:---:|:---:|:---:|---:|---|
-| **SF frozen+FiLM (reinit)** | **0.886** | 0.098 | **0.873** | 0.3M | S2 L1C+L2A, S1, DEM, DOY |
-| SF frozen+FiLM (hilr) | 0.886 | 0.099 | 0.866 | 0.3M | S2 L1C+L2A, S1, DEM, DOY |
+| **SF frozen+FiLM (reinit)** | **0.886** | 0.098 | **0.873** | 104.8M | S2 L1C+L2A, S1, DEM, DOY |
+| SF frozen+FiLM (hilr) | 0.886 | 0.099 | 0.866 | 104.8M | S2 L1C+L2A, S1, DEM, DOY |
+| SF from scratch+FiLM | 0.883 | --- | 0.835 | 104.8M | S2 L1C+L2A, S1, DEM, DOY |
 | SF no FiLM (ISPRS) | 0.880 | 0.101 | 0.869 | 104.8M | S2 L1C+L2A, S1, DEM |
-| DINOv3 ViT-L/16 (sat) | 0.874 | 0.100 | 0.870 | 2.1M | 6 primitives + DOY |
-| DINOv3 ViT-S/16 (nat) | 0.861 | 0.109 | 0.863 | 1.8M | 6 primitives + DOY |
-| SF from scratch+FiLM | --- | --- | --- | 104.8M | S2 L1C+L2A, S1, DEM, DOY |
-| SF RGB-only+FiLM | 0.836 | --- | --- | 26.3M | S2 RGB, DOY |
+| DINOv3 ViT-L/16 (sat) | 0.874 | 0.100 | 0.870 | 304M | 6 primitives + DOY |
+| DINOv3 ViT-S/16 (nat) | 0.861 | 0.109 | 0.863 | 23.8M | 6 primitives + DOY |
+| SF RGB-only+FiLM | 0.836 | --- | 0.823 | 26.3M | S2 RGB, DOY |
 | *Real AlphaEarth (ceiling)* | *---* | *---* | *0.889* | --- | --- |
 
 ### Which model should I use?
 
 | Use case | Recommended model | Why |
 |---|---|---|
-| **Best quality** | SF frozen+FiLM (reinit) | Highest cos sim (0.886) and LULC accuracy (0.873) with only 0.3M params |
+| **Best quality** | SF frozen+FiLM (reinit) | Highest cos sim (0.886) and LULC accuracy (0.873) |
 | **No timestamp needed** | SF no FiLM (ISPRS) | Does not require day-of-year input; still achieves 0.880 |
-| **Parameter-efficient** | DINOv3 ViT-L/16 | Frozen backbone, 2.1M trainable params, good modality robustness |
-| **Lightweight / edge** | DINOv3 ViT-S/16 | Smallest model, 1.8M params |
+| **Lightweight / edge** | DINOv3 ViT-S/16 | 23.8M params, good quality (0.861) |
 | **Minimal data requirements** | SF RGB-only+FiLM | Only needs 3-band RGB + day-of-year |
 | **Research / ablation** | SF frozen+FiLM (hilr) | Alternative fusion strategy for comparison |
 
