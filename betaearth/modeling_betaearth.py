@@ -216,6 +216,223 @@ class SegFormerEncoder(nn.Module):
 
 
 # =============================================================================
+# DINOv3 primitive-based encoder
+# =============================================================================
+
+_DPT_LAYERS_S = [2, 5, 8, 11]    # ViT-S/16: 12 blocks
+_DPT_LAYERS_L = [5, 11, 17, 23]  # ViT-L/16: 24 blocks
+
+# Band indices within 9-band S2 stack: [B02,B03,B04,B08,B05,B06,B07,B11,B12]
+_B02, _B03, _B04, _B08 = 0, 1, 2, 3
+_B05, _B06, _B07, _B11, _B12 = 4, 5, 6, 7, 8
+
+
+def _s2_to_primitives(x: Tensor) -> list[Tensor]:
+    """(B, 9, H, W) → 4 × (B, 3, H, W): RGB, FalseIR, SWIR, RedEdge."""
+    return [
+        x[:, [_B04, _B03, _B02]],
+        x[:, [_B08, _B04, _B03]],
+        x[:, [_B12, _B11, _B04]],
+        x[:, [_B07, _B06, _B05]],
+    ]
+
+
+def _s1_to_primitives(x: Tensor) -> list[Tensor]:
+    """(B, 2, H, W) → 1 × (B, 3, H, W): VV, VH, VV/VH."""
+    vv, vh = x[:, 0:1], x[:, 1:2]
+    ratio = (vv / (vh + 1e-6)).clamp(0, 1)
+    return [torch.cat([vv, vh, ratio], dim=1)]
+
+
+def _dem_to_primitives(x: Tensor) -> list[Tensor]:
+    """(B, 1, H, W) → 1 × (B, 3, H, W): elevation, slope, aspect."""
+    elev = x[:, 0:1]
+    padded = F.pad(elev, (1, 1, 1, 1), mode="replicate")
+    dz_dx = (padded[:, :, 1:-1, 2:] - padded[:, :, 1:-1, :-2]) / 2.0
+    dz_dy = (padded[:, :, 2:, 1:-1] - padded[:, :, :-2, 1:-1]) / 2.0
+    slope = torch.sqrt(dz_dx ** 2 + dz_dy ** 2).clamp(0, 1)
+    aspect = (torch.atan2(dz_dy, dz_dx) + torch.pi) / (2 * torch.pi)
+    return [torch.cat([elev, slope, aspect], dim=1)]
+
+
+class DPTHead(nn.Module):
+    """DPT-style reassembly: 4 ViT layers → dense feature map at 1/4 res."""
+
+    def __init__(self, embed_dim: int, head_dim: int = 128):
+        super().__init__()
+        self.projections = nn.ModuleList([
+            nn.Conv2d(embed_dim, head_dim, 1) for _ in range(4)
+        ])
+        self.fuse = nn.Sequential(
+            nn.Conv2d(head_dim * 4, head_dim, 3, padding=1),
+            nn.GELU(),
+            nn.Conv2d(head_dim, head_dim, 3, padding=1),
+            nn.GELU(),
+        )
+
+    def forward(self, layer_features: list[Tensor]) -> Tensor:
+        target_h = layer_features[0].shape[2] * 4
+        target_w = layer_features[0].shape[3] * 4
+        projected = []
+        for feat, proj in zip(layer_features, self.projections):
+            p = F.interpolate(proj(feat), size=(target_h, target_w),
+                              mode="bilinear", align_corners=False)
+            projected.append(p)
+        return self.fuse(torch.cat(projected, dim=1))
+
+
+class SetFusion(nn.Module):
+    """Set-based fusion: self-attention over primitives + learned query pooling."""
+
+    def __init__(self, feat_dim: int = 128, out_dim: int = 256,
+                 n_heads: int = 8, n_layers: int = 2):
+        super().__init__()
+        self.out_dim = out_dim
+        layer = nn.TransformerEncoderLayer(
+            d_model=feat_dim, nhead=n_heads, dim_feedforward=feat_dim * 4,
+            dropout=0.0, activation="gelu", batch_first=True, norm_first=True,
+        )
+        self.self_attn = nn.TransformerEncoder(layer, num_layers=n_layers)
+        self.query = nn.Parameter(torch.randn(1, 1, feat_dim) * 0.02)
+        self.cross_attn = nn.MultiheadAttention(
+            feat_dim, n_heads, dropout=0.0, batch_first=True,
+        )
+        self.cross_norm_q = nn.LayerNorm(feat_dim)
+        self.cross_norm_kv = nn.LayerNorm(feat_dim)
+        self.proj = nn.Sequential(nn.Linear(feat_dim, out_dim), nn.GELU())
+
+    def forward(self, primitives: list[Tensor]) -> Tensor:
+        B, C, H, W = primitives[0].shape
+        N = len(primitives)
+        x = torch.stack(primitives, dim=-1).permute(0, 2, 3, 4, 1).reshape(B * H * W, N, C)
+        x = self.self_attn(x)
+        q = self.cross_norm_q(self.query.expand(B * H * W, -1, -1))
+        out, _ = self.cross_attn(q, self.cross_norm_kv(x), self.cross_norm_kv(x))
+        out = self.proj(out.squeeze(1))
+        return out.reshape(B, H, W, self.out_dim).permute(0, 3, 1, 2)
+
+
+class EmbeddingDecoder(nn.Module):
+    """Project fused features to 64-d embedding space."""
+
+    def __init__(self, in_channels: int = 256, embed_dim: int = 64):
+        super().__init__()
+        self.proj = nn.Sequential(
+            nn.Conv2d(in_channels, in_channels // 2, 3, padding=1),
+            nn.GELU(),
+            nn.Conv2d(in_channels // 2, embed_dim, 1),
+        )
+
+    def forward(self, x: Tensor, target_size: tuple[int, int] | None = None) -> Tensor:
+        out = self.proj(x)
+        if target_size is not None and (out.shape[2], out.shape[3]) != target_size:
+            out = F.interpolate(out, size=target_size, mode="bilinear",
+                                align_corners=False)
+        return out.permute(0, 2, 3, 1)
+
+
+class DINOv3Encoder(nn.Module):
+    """DINOv3 primitive-based encoder with set fusion.
+
+    Architecture:
+        Modalities → 3-band primitives → shared frozen DINOv3 + DPT head
+        → FiLM temporal conditioning → SetFusion → EmbeddingDecoder → (B, H, W, 64)
+
+    The DINOv3 backbone is loaded from torch.hub at runtime.
+    Only the DPT head, FiLM, fusion, and decoder weights are stored.
+    """
+
+    VARIANTS = {
+        "vits16": {"embed_dim": 384, "hub_name": "dinov3_vits16", "dpt_layers": _DPT_LAYERS_S},
+        "vitl16": {"embed_dim": 1024, "hub_name": "dinov3_vitl16", "dpt_layers": _DPT_LAYERS_L},
+    }
+
+    def __init__(self, variant: str = "vitl16", head_dim: int = 128,
+                 fusion_dim: int = 256, embed_dim: int = 64,
+                 time_embed_dim: int = 128, backbone: nn.Module | None = None):
+        super().__init__()
+        cfg = self.VARIANTS[variant]
+        self.variant = variant
+        self.head_dim = head_dim
+        self.dpt_layers = cfg["dpt_layers"]
+
+        # Backbone — injected or loaded from hub
+        if backbone is not None:
+            self.backbone = backbone
+        else:
+            self.backbone = None  # Loaded lazily in load_backbone()
+
+        # DPT head
+        self.dpt_head = DPTHead(cfg["embed_dim"], head_dim)
+        # FiLM time conditioning
+        self.time_cond = TimestampConditioner(time_embed_dim, head_dim)
+        # Set fusion
+        self.fusion = SetFusion(head_dim, fusion_dim)
+        # Decoder
+        self.decoder = EmbeddingDecoder(fusion_dim, embed_dim)
+
+    def load_backbone(self, weights_path: str | None = None):
+        """Load frozen DINOv3 backbone from torch.hub or local weights."""
+        cfg = self.VARIANTS[self.variant]
+        if weights_path:
+            import pathlib
+            hub_dir = str(pathlib.Path(weights_path).parent)
+            self.backbone = torch.hub.load(
+                hub_dir, cfg["hub_name"], source="local", weights=weights_path,
+            )
+        else:
+            self.backbone = torch.hub.load(
+                "facebookresearch/dinov3", cfg["hub_name"],
+            )
+        self.backbone.eval()
+        for p in self.backbone.parameters():
+            p.requires_grad = False
+
+    def _extract_features(self, x: Tensor) -> list[Tensor]:
+        with torch.no_grad():
+            features = self.backbone.get_intermediate_layers(
+                x, n=len(self.backbone.blocks), reshape=True,
+            )
+        return [features[i].detach() for i in self.dpt_layers]
+
+    def _encode_primitive(self, x: Tensor) -> Tensor:
+        return self.dpt_head(self._extract_features(x))
+
+    def forward(self, batch: dict, modalities: list[str] | None = None) -> Tensor:
+        if modalities is None:
+            modalities = ["s2_l1c", "s2_l2a", "s1_rtc", "cop_dem"]
+
+        doy = batch.get("timestamp")
+        target_size = None
+        for k in ["s2_l1c", "s2_l2a", "s1_rtc", "cop_dem"]:
+            if k in batch and batch[k] is not None:
+                target_size = (batch[k].shape[-2], batch[k].shape[-1])
+                break
+
+        prim_fns = {
+            "s2_l1c": (_s2_to_primitives, True),
+            "s2_l2a": (_s2_to_primitives, True),
+            "s1_rtc": (_s1_to_primitives, True),
+            "cop_dem": (_dem_to_primitives, False),
+        }
+
+        all_feats = []
+        for mod_key in modalities:
+            x = batch.get(mod_key)
+            if x is None:
+                continue
+            prim_fn, uses_time = prim_fns[mod_key]
+            for prim in prim_fn(x):
+                feat = self._encode_primitive(prim)
+                if uses_time and doy is not None:
+                    feat = self.time_cond(feat, doy)
+                all_feats.append(feat)
+
+        fused = self.fusion(all_feats)
+        return self.decoder(fused, target_size)
+
+
+# =============================================================================
 # Tiled inference
 # =============================================================================
 
@@ -313,35 +530,41 @@ class BetaEarth:
         emb = model.predict(s2_l2a=arr, dem=dem, doy=182)
     """
 
-    def __init__(self, encoder: SegFormerEncoder, device: str = "cuda"):
+    # Map repo names to model types
+    _DINOV3_REPOS = {"betaearth-dinov3-vitl16", "betaearth-dinov3-vits16"}
+
+    def __init__(self, encoder: nn.Module, device: str = "cuda"):
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
         self.encoder = encoder.to(self.device).eval()
 
     @classmethod
     def from_pretrained(cls, repo_id_or_path: str, device: str = "cuda",
+                        dinov3_weights: str | None = None,
                         **kwargs) -> "BetaEarth":
         """Load a pretrained BetaEarth model.
 
         Args:
-            repo_id_or_path: HuggingFace Hub repo ID (e.g. "asterisk-labs/betaearth-segformer-film")
-                or local path to a .pt / .ckpt file.
+            repo_id_or_path: HuggingFace Hub repo ID (e.g. "asterisk-labs/betaearth-segformer-film"
+                or "asterisk-labs/betaearth-dinov3-vitl16") or local path.
             device: "cuda" or "cpu".
+            dinov3_weights: Path to DINOv3 backbone weights (.pth). Only needed
+                for DINOv3 models. If None, downloads from torch.hub.
 
         Returns:
             BetaEarth instance ready for inference.
         """
         path = Path(repo_id_or_path)
 
+        # Resolve weights path
         if path.exists() and path.is_file():
-            # Local file
             weights_path = path
+            config_path = None
         elif path.exists() and path.is_dir():
-            # Local directory — look for weights file
             weights_path = path / "model.pt"
             if not weights_path.exists():
                 weights_path = path / "model.safetensors"
+            config_path = path / "config.json" if (path / "config.json").exists() else None
         else:
-            # HuggingFace Hub
             from huggingface_hub import hf_hub_download
             try:
                 weights_path = hf_hub_download(repo_id=repo_id_or_path,
@@ -349,15 +572,43 @@ class BetaEarth:
             except Exception:
                 weights_path = hf_hub_download(repo_id=repo_id_or_path,
                                                 filename="model.safetensors")
+            try:
+                config_path = hf_hub_download(repo_id=repo_id_or_path,
+                                               filename="config.json")
+            except Exception:
+                config_path = None
 
-        encoder = SegFormerEncoder(
-            embed_dim=64, encoder_name="mit_b2",
-            fusion_dim=256, time_embed_dim=128,
-        )
+        # Detect model type from config or repo name
+        is_dinov3 = False
+        variant = "vitl16"
+        if config_path:
+            import json
+            with open(config_path) as f:
+                config = json.load(f)
+            is_dinov3 = config.get("model_type", "").startswith("betaearth-dinov3")
+            variant = config.get("architecture", {}).get("variant", "vitl16")
+        else:
+            repo_name = Path(repo_id_or_path).name
+            if any(d in repo_name for d in cls._DINOV3_REPOS):
+                is_dinov3 = True
+                variant = "vits16" if "vits16" in repo_name else "vitl16"
 
-        # Load weights
-        state_dict = torch.load(weights_path, map_location="cpu", weights_only=True)
-        encoder.load_state_dict(state_dict, strict=False)
+        if is_dinov3:
+            encoder = DINOv3Encoder(
+                variant=variant, head_dim=128,
+                fusion_dim=256, embed_dim=64, time_embed_dim=128,
+            )
+            state_dict = torch.load(weights_path, map_location="cpu", weights_only=True)
+            encoder.load_state_dict(state_dict, strict=False)
+            # Load frozen backbone
+            encoder.load_backbone(dinov3_weights)
+        else:
+            encoder = SegFormerEncoder(
+                embed_dim=64, encoder_name="mit_b2",
+                fusion_dim=256, time_embed_dim=128,
+            )
+            state_dict = torch.load(weights_path, map_location="cpu", weights_only=True)
+            encoder.load_state_dict(state_dict, strict=False)
 
         return cls(encoder, device=device)
 
