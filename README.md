@@ -1,4 +1,4 @@
-<img width="1928" height="800" alt="beta-full" src="https://github.com/user-attachments/assets/a4f759ae-f9b0-4680-9205-f30f09291e68" />
+<img width="1897" height="800" alt="beta-full-darkmode" src="https://github.com/user-attachments/assets/3817421d-ef21-42db-b5c4-c654890e44dd" />
 
 
 [![arXiv](https://img.shields.io/badge/arXiv-XXXX.XXXXX-b31b1b.svg)](https://arxiv.org/abs/XXXX.XXXXX)
