@@ -1,4 +1,5 @@
-<img width="2736" height="800" alt="main" src="https://github.com/user-attachments/assets/0a343061-4efd-4fb9-9746-3ea9b19b0120" />
+<img width="1928" height="800" alt="beta-full" src="https://github.com/user-attachments/assets/a4f759ae-f9b0-4680-9205-f30f09291e68" />
+
 
 [![arXiv](https://img.shields.io/badge/arXiv-XXXX.XXXXX-b31b1b.svg)](https://arxiv.org/abs/XXXX.XXXXX)
 [![License: CC BY 4.0](https://img.shields.io/badge/License-CC_BY_4.0-lightgrey.svg)](https://creativecommons.org/licenses/by/4.0/)
