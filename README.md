@@ -28,13 +28,14 @@ BetaEarth has **no access to AEF's weights or architecture**. It is an independe
 
 ## Models
 
-We release **7 model variants** spanning different trade-offs between quality, parameter efficiency, and input requirements.
+We release **8 model variants** spanning different trade-offs between quality, parameter efficiency, and input requirements.
 
-### Main results (200-tile test set)
+### Main results (6,200-tile test set)
 
 | Model | Test Cos Sim | Std | LULC Acc | Model Size | Inputs |
 |---|:---:|:---:|:---:|---:|---|
-| **SF frozen+FiLM (reinit)** | **0.886** | 0.098 | **0.873** | 104.8M | S2 L1C+L2A, S1, DEM, DOY |
+| **SF curriculum (robust)** | **0.873** | 0.109 | **0.833** | 104.8M | **Any subset** of S2/S1/DEM + DOY |
+| SF frozen+FiLM (reinit) | 0.886 | 0.098 | 0.873 | 104.8M | S2 L1C+L2A, S1, DEM, DOY |
 | SF frozen+FiLM (hilr) | 0.886 | 0.099 | 0.866 | 104.8M | S2 L1C+L2A, S1, DEM, DOY |
 | SF from scratch+FiLM | 0.883 | --- | 0.835 | 104.8M | S2 L1C+L2A, S1, DEM, DOY |
 | SF no FiLM (ISPRS) | 0.880 | 0.101 | 0.869 | 104.8M | S2 L1C+L2A, S1, DEM |
@@ -43,11 +44,22 @@ We release **7 model variants** spanning different trade-offs between quality, p
 | SF RGB-only+FiLM | 0.836 | --- | 0.823 | 26.3M | S2 RGB, DOY |
 | *Real AlphaEarth (ceiling)* | *---* | *---* | *0.889* | --- | --- |
 
+The **curriculum (robust)** model handles any modality subset gracefully:
+
+| Input subset | Cosine sim |
+|---|:---:|
+| All modalities | 0.873 |
+| L1C only | 0.806 |
+| L2A only | 0.755 |
+| S1 only | 0.712 |
+| DEM only | 0.609 |
+
 ### Which model should I use?
 
 | Use case | Recommended model | Why |
 |---|---|---|
-| **Best quality** | SF frozen+FiLM (reinit) | Highest cos sim (0.886) and LULC accuracy (0.873) |
+| **General use (default)** | SF curriculum (robust) | Works with any input subset; best for real-world deployment |
+| **Maximum quality** | SF frozen+FiLM (reinit) | Highest cos sim (0.886) — requires all 4 modalities |
 | **No timestamp needed** | SF no FiLM (ISPRS) | Does not require day-of-year input; still achieves 0.880 |
 | **Lightweight / edge** | DINOv3 ViT-S/16 | 23.8M params, good quality (0.861) |
 | **Minimal data requirements** | SF RGB-only+FiLM | Only needs 3-band RGB + day-of-year |
@@ -102,7 +114,7 @@ pip install betaearth
 ```python
 from betaearth import BetaEarth
 
-model = BetaEarth.from_pretrained("asterisk-labs/betaearth-segformer-film")
+model = BetaEarth.from_pretrained()  # default: robust variant
 # BetaEarth(params=104.8M, device=cuda)
 
 # All inputs are raw (unnormalised) — preprocessing is handled internally

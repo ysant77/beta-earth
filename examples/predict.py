@@ -54,7 +54,7 @@ def load_dem(dem_path: str) -> np.ndarray:
 
 def main():
     parser = argparse.ArgumentParser(description="Predict BetaEarth embeddings")
-    parser.add_argument("--model", default="asterisk-labs/betaearth-segformer-film",
+    parser.add_argument("--model", default="asterisk-labs/betaearth-segformer-film-robust",
                         help="HuggingFace model ID or local path")
     parser.add_argument("--s2_l2a", help="Directory with S2 L2A band TIFFs")
     parser.add_argument("--s2_l1c", help="Directory with S2 L1C band TIFFs")

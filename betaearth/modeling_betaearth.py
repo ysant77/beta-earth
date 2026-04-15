@@ -526,7 +526,7 @@ class BetaEarth:
 
     Example::
 
-        model = BetaEarth.from_pretrained("asterisk-labs/betaearth-segformer-film")
+        model = BetaEarth.from_pretrained("asterisk-labs/betaearth-segformer-film-robust")
         emb = model.predict(s2_l2a=arr, dem=dem, doy=182)
     """
 
@@ -538,14 +538,17 @@ class BetaEarth:
         self.encoder = encoder.to(self.device).eval()
 
     @classmethod
-    def from_pretrained(cls, repo_id_or_path: str, device: str = "cuda",
+    def from_pretrained(cls, repo_id_or_path: str = "asterisk-labs/betaearth-segformer-film-robust",
+                        device: str = "cuda",
                         dinov3_weights: str | None = None,
                         **kwargs) -> "BetaEarth":
         """Load a pretrained BetaEarth model.
 
         Args:
-            repo_id_or_path: HuggingFace Hub repo ID (e.g. "asterisk-labs/betaearth-segformer-film"
-                or "asterisk-labs/betaearth-dinov3-vitl16") or local path.
+            repo_id_or_path: HuggingFace Hub repo ID or local path.
+                Default: "asterisk-labs/betaearth-segformer-film-robust" —
+                the recommended model, trained with modality dropout for
+                robust single-modality inference.
             device: "cuda" or "cpu".
             dinov3_weights: Path to DINOv3 backbone weights (.pth). Only needed
                 for DINOv3 models. If None, downloads from torch.hub.
