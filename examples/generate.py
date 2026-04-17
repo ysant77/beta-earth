@@ -434,7 +434,7 @@ def generate(
         log.info("  Predicted (%s)", _elapsed(t0))
 
         # Save per-timestamp
-        ts_dir = files_dir / f"{dt.date()}_s2_{mgrs}"
+        ts_dir = files_dir / f"{dt.date()}_s2"
         ts_dir.mkdir(parents=True, exist_ok=True)
         write_geotiff(emb.astype(np.float32), grid, ts_dir / "embedding.tif")
         if save_scenes:

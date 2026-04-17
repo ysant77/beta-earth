@@ -588,8 +588,11 @@ class BetaEarth:
             import json
             with open(config_path) as f:
                 config = json.load(f)
-            is_dinov3 = config.get("model_type", "").startswith("betaearth-dinov3")
-            variant = config.get("architecture", {}).get("variant", "vitl16")
+            arch = config.get("architecture", "")
+            is_dinov3 = config.get("model_type", "").startswith("betaearth-dinov3") or (
+                isinstance(arch, str) and "dinov3" in arch
+            )
+            variant = arch.get("variant", "vitl16") if isinstance(arch, dict) else "vitl16"
         else:
             repo_name = Path(repo_id_or_path).name
             if any(d in repo_name for d in cls._DINOV3_REPOS):

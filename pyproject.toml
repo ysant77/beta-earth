@@ -38,6 +38,12 @@ generate = [
     "scikit-learn>=1.0",
     "Pillow>=9.0",
 ]
+demo = [
+    "betaearth[generate]",
+    "streamlit>=1.30",
+    "streamlit-folium>=0.18",
+    "folium>=0.15",
+]
 
 [project.urls]
 Homepage = "https://github.com/asterisk-labs/beta-earth"
