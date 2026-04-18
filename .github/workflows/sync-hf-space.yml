@@ -1,0 +1,62 @@
+name: Sync demo to HuggingFace Space
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'demo/**'
+      - 'examples/generate.py'
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare Space files
+        run: |
+          mkdir -p space/.streamlit
+          cp demo/app.py space/app.py
+          cp demo/.streamlit/config.toml space/.streamlit/config.toml
+          cp examples/generate.py space/generate.py
+
+          # Fix imports for standalone Space
+          sed -i "s|from examples.generate import|from generate import|g" space/app.py
+          sed -i '/^import sys$/d' space/app.py
+          sed -i '/sys.path.insert/d' space/app.py
+
+          # requirements.txt
+          cat > space/requirements.txt << 'EOF'
+          betaearth[generate]>=0.2.0
+          streamlit-folium>=0.18
+          folium>=0.15
+          EOF
+
+          # README with Space metadata
+          cat > space/README.md << 'EOF'
+          ---
+          title: BetaEarth
+          emoji: 🥕
+          colorFrom: purple
+          colorTo: yellow
+          sdk: streamlit
+          sdk_version: "1.45.1"
+          app_file: app.py
+          pinned: false
+          license: cc-by-4.0
+          short_description: Dense 10m geospatial embeddings from Sentinel
+          ---
+          EOF
+
+      - name: Push to HuggingFace Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          cd space
+          git init
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git remote add hf https://mikonvergence:$HF_TOKEN@huggingface.co/spaces/asterisk-labs/betaearth
+          git add -A
+          git commit -m "sync from GitHub $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git push hf main --force
