@@ -13,11 +13,15 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import hashlib
 import json
+import os
 import shutil
 import tempfile
+import threading
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 import folium
@@ -43,6 +47,101 @@ RESOLUTION = 10.0
 MAX_OUTPUT_MB = 3000
 BYTES_PER_PIXEL = 64 * 4
 COMPRESSION_RATIO = 1.0   # embeddings are near-incompressible (L2-normed float32)
+HF_DATASET_REPO = "asterisk-labs/betaearth-requests"  # Private dataset for request logging
+
+
+# ---------------------------------------------------------------------------
+# Request logging to HuggingFace Dataset
+# ---------------------------------------------------------------------------
+def _log_request_async(
+    timestamp: str,
+    bbox: tuple[float, float, float, float],
+    area_km2: float,
+    years: list[int],
+    time_mode: str,
+    save_per_timestamp: bool,
+    save_per_timestamp_input: bool,
+) -> None:
+    """Fire-and-forget logging of request metadata to HuggingFace Dataset."""
+    try:
+        from huggingface_hub import get_write_access_token
+        from pathlib import Path
+        import json
+        import tempfile
+
+        # Get HF token from Streamlit secrets (OAuth provider)
+        # If running on HF Spaces, HUGGINGFACE_TOKEN or HF_TOKEN env variable should be available
+        hf_token = st.secrets.get("HF_TOKEN")
+        if not hf_token:
+            hf_token = os.environ.get("HF_TOKEN")
+        if not hf_token:
+            return  # Silent fail if no token available
+
+        # Construct request record
+        record = {
+            "timestamp": timestamp,
+            "bbox_w": bbox[0],
+            "bbox_s": bbox[1],
+            "bbox_e": bbox[2],
+            "bbox_n": bbox[3],
+            "area_km2": float(area_km2),
+            "years": years,
+            "time_mode": time_mode,
+            "save_per_timestamp": bool(save_per_timestamp),
+            "save_per_timestamp_input": bool(save_per_timestamp_input),
+        }
+
+        # Write as JSON to a temporary file, append to dataset via parquet
+        import pandas as pd
+        from huggingface_hub import CommitOperationAdd, HfApi, upload_file
+
+        # Create a single-row parquet file
+        df = pd.DataFrame([record])
+        with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as tmp:
+            df.to_parquet(tmp.name, index=False)
+            tmp_path = tmp.name
+
+        # Upload as a new commit to the dataset
+        # Using CommitOperationAdd to append a timestamped file
+        api = HfApi(token=hf_token)
+
+        # Create a unique file name based on timestamp to avoid collisions
+        timestamp_clean = timestamp.replace(":", "-").replace(".", "-")
+        file_name = f"requests/{timestamp_clean}.parquet"
+
+        # Upload the file
+        api.upload_file(
+            path_or_fileobj=tmp_path,
+            path_in_repo=file_name,
+            repo_id=HF_DATASET_REPO,
+            repo_type="dataset",
+            commit_message=f"Log request {timestamp}",
+        )
+
+        # Clean up temp file
+        Path(tmp_path).unlink()
+    except Exception as e:
+        # Silent fail — don't interrupt user experience
+        pass
+
+
+def log_request(
+    bbox: tuple[float, float, float, float],
+    area_km2: float,
+    years: list[int],
+    time_mode: str,
+    save_per_timestamp: bool,
+    save_per_timestamp_input: bool,
+) -> None:
+    """Log request metadata asynchronously (fire-and-forget)."""
+    timestamp = datetime.utcnow().isoformat() + "Z"
+    thread = threading.Thread(
+        target=_log_request_async,
+        args=(timestamp, bbox, area_km2, years, time_mode, save_per_timestamp, save_per_timestamp_input),
+        daemon=True,
+    )
+    thread.start()
+
 
 
 # ---------------------------------------------------------------------------
@@ -265,14 +364,65 @@ st.markdown("""
 # ---------------------------------------------------------------------------
 # Size estimation
 # ---------------------------------------------------------------------------
-def estimate_size(bbox, n_scenes=7):
+MIN_SIDE_KM = 3.2   # ~320 px at 10 m — safe multiple of 32 and > tile_size 224
+
+
+def estimate_size(
+    bbox,
+    n_scenes=28,
+    n_years=1,
+    save_per_timestamp=True,
+    save_per_timestamp_input=False,
+):
+    """Return (width_km, height_km, total_mb). Factors in per-timestamp toggles."""
     w, s, e, n = bbox
     width_km = (e - w) * 111 * abs(np.cos(np.radians((s + n) / 2)))
     height_km = (n - s) * 111
     n_pixels = int(width_km * 1000 / RESOLUTION) * int(height_km * 1000 / RESOLUTION)
-    file_mb = n_pixels * BYTES_PER_PIXEL / COMPRESSION_RATIO / 1e6
-    total_mb = file_mb * (1 + n_scenes)
-    return round(width_km, 1), round(height_km, 1), round(total_mb, 1)
+    emb_bytes = n_pixels * BYTES_PER_PIXEL               # 64 bands × f32
+    s2_bytes = n_pixels * 9 * 4                          # 9 bands × f32
+    s1_bytes = n_pixels * 2 * 4                          # 2 bands × f32
+    dem_bytes = n_pixels * 4                             # 1 band × f32
+
+    # Rough split: ~24 S2 + ~4 S1 per year at max quota
+    s2_per_year = 24 * (n_scenes / 28)
+    s1_per_year = 4 * (n_scenes / 28)
+
+    total = emb_bytes * n_years                          # 1 annual .tif per year
+    if save_per_timestamp:
+        total += emb_bytes * (s2_per_year + s1_per_year) * n_years
+    if save_per_timestamp_input:
+        total += s2_bytes * s2_per_year * n_years
+        total += s1_bytes * s1_per_year * n_years
+        total += dem_bytes                                # one-time
+    return round(width_km, 1), round(height_km, 1), round(total / 1e6, 1)
+
+
+def expand_to_min(bbox, min_km=MIN_SIDE_KM):
+    """Expand bbox symmetrically so each side >= min_km. Returns (new_bbox, was_padded)."""
+    w, s, e, n = bbox
+    lat_mid = (s + n) / 2
+    width_km = (e - w) * 111 * abs(np.cos(np.radians(lat_mid)))
+    height_km = (n - s) * 111
+    pad_x = pad_y = 0
+    if width_km < min_km:
+        pad_x = (min_km - width_km) / (2 * 111 * abs(np.cos(np.radians(lat_mid))))
+    if height_km < min_km:
+        pad_y = (min_km - height_km) / (2 * 111)
+    was_padded = (pad_x > 0) or (pad_y > 0)
+    return (w - pad_x, s - pad_y, e + pad_x, n + pad_y), was_padded
+
+
+def crop_to_user(arr, pad_grid, user_grid, channel_axis=-1):
+    """Crop an array from the padded grid down to the user's grid."""
+    if pad_grid is user_grid:
+        return arr
+    col_off = round((user_grid["transform"].xoff - pad_grid["transform"].xoff) / RESOLUTION)
+    row_off = round((pad_grid["transform"].yoff - user_grid["transform"].yoff) / RESOLUTION)
+    out_h, out_w = user_grid["shape"]
+    if channel_axis == 0:
+        return arr[:, row_off:row_off + out_h, col_off:col_off + out_w]
+    return arr[row_off:row_off + out_h, col_off:col_off + out_w, ...]
 
 
 # ---------------------------------------------------------------------------
@@ -311,19 +461,21 @@ with st.sidebar:
     # Bbox display
     if "bbox" in st.session_state and st.session_state.bbox:
         bbox = st.session_state.bbox
-        w_km, h_km, est_mb = estimate_size(bbox)
         n_years = len(years)
-        if save_per_timestamp:
-            total_mb = est_mb * n_years  # annual + per-timestamp
-        else:
-            per_year_mb = w_km * 1000 / RESOLUTION * h_km * 1000 / RESOLUTION * BYTES_PER_PIXEL / COMPRESSION_RATIO / 1e6
-            total_mb = round(per_year_mb * n_years, 1)  # annual only
+        w_km, h_km, total_mb = estimate_size(
+            bbox, n_years=n_years,
+            save_per_timestamp=save_per_timestamp,
+            save_per_timestamp_input=save_per_timestamp_input,
+        )
         st.metric("Area", f"{w_km} × {h_km} km")
         label = f"{total_mb} MB" + (f" ({n_years} yr)" if n_years > 1 else "")
         if total_mb <= MAX_OUTPUT_MB:
             st.metric("Est. output", label, delta="OK", delta_color="normal")
         else:
             st.metric("Est. output", label, delta=f">{MAX_OUTPUT_MB} MB!", delta_color="inverse")
+        _, was_padded = expand_to_min(bbox)
+        if was_padded:
+            st.info(f"Small area — will be padded internally to {MIN_SIDE_KM} km per side, output cropped back.")
         st.code(f"W={bbox[0]:.4f}\nS={bbox[1]:.4f}\nE={bbox[2]:.4f}\nN={bbox[3]:.4f}", language=None)
     else:
         st.info("Draw a rectangle on the map")
@@ -375,7 +527,7 @@ folium.plugins.Draw(
     draw_options={
         "polyline": False, "polygon": False, "circle": False,
         "circlemarker": False, "marker": False,
-        "rectangle": {"shapeOptions": {"color": "#ff6600", "weight": 3, "fillOpacity": 0.1}},
+        "rectangle": {"shapeOptions": {"color": "#c4ffc2", "weight": 3, "fillOpacity": 0.1}},
     },
     edit_options={"edit": False},
 ).add_to(m)
@@ -386,7 +538,7 @@ if "bbox" in st.session_state and st.session_state.bbox:
     sbbox = st.session_state.bbox
     folium.Rectangle(
         bounds=[[sbbox[1], sbbox[0]], [sbbox[3], sbbox[2]]],
-        color="#ff6600", weight=3, fill=True, fill_opacity=0.1,
+        color="#c4ffc2", weight=3, fill=True, fill_opacity=0.1,
     ).add_to(m)
     m.fit_bounds([[sbbox[1], sbbox[0]], [sbbox[3], sbbox[2]]])
 else:
@@ -458,15 +610,12 @@ if map_data and map_data.get("all_drawings"):
 # ---------------------------------------------------------------------------
 if generate_btn and "bbox" in st.session_state and st.session_state.bbox:
     bbox = st.session_state.bbox
-    w_km, h_km, est_mb = estimate_size(bbox)
-
     n_years = len(years)
-    if save_per_timestamp:
-        total_mb = est_mb * n_years
-    else:
-        w_km, h_km, _ = estimate_size(bbox, n_scenes=0)
-        per_year_mb = w_km * 1000 / RESOLUTION * h_km * 1000 / RESOLUTION * BYTES_PER_PIXEL / COMPRESSION_RATIO / 1e6
-        total_mb = round(per_year_mb * n_years, 1)
+    w_km, h_km, total_mb = estimate_size(
+        bbox, n_years=n_years,
+        save_per_timestamp=save_per_timestamp,
+        save_per_timestamp_input=save_per_timestamp_input,
+    )
     if total_mb > MAX_OUTPUT_MB:
         st.error(f"Estimated output ({total_mb:.0f} MB) exceeds {MAX_OUTPUT_MB} MB limit. Select a smaller region or fewer years.")
     else:
@@ -485,21 +634,25 @@ if generate_btn and "bbox" in st.session_state and st.session_state.bbox:
         model = BetaEarth.from_pretrained(device=device)
         progress.progress(5, text=f"Model loaded on {device}")
 
-        grid = compute_grid(bbox)
+        user_grid = compute_grid(bbox)
+        pad_bbox, was_padded = expand_to_min(bbox)
+        grid = compute_grid(pad_bbox) if was_padded else user_grid
         h, w = grid["shape"]
+        out_h, out_w = user_grid["shape"]
 
         run_id = uuid.uuid4().hex[:8]
         output_dir = Path(tempfile.mkdtemp()) / f"betaearth_{run_id}"
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # DEM (shared across years)
+        # DEM (shared across years) — download at padded size, save cropped
         progress.progress(8, text="Downloading DEM...")
         dem = download_dem(grid)
         if save_per_timestamp_input:
-            write_geotiff(dem.astype(np.float32), grid, output_dir / "dem.tif")
-            # DEM preview — grayscale hillshade-style normalisation
+            dem_out = crop_to_user(dem, grid, user_grid, channel_axis=0)
+            write_geotiff(dem_out.astype(np.float32), user_grid, output_dir / "dem.tif")
+            # DEM preview (from cropped array)
             from PIL import Image
-            d = dem[0].astype(np.float32)
+            d = dem_out[0].astype(np.float32)
             lo, hi = np.percentile(d[np.isfinite(d)], [2, 98])
             d_norm = np.clip((d - lo) / max(hi - lo, 1e-6), 0, 1)
             Image.fromarray((d_norm * 255).astype(np.uint8)).save(output_dir / "dem_preview.png")
@@ -590,21 +743,23 @@ if generate_btn and "bbox" in st.session_state and st.session_state.bbox:
                 ts_dir = files_dir / ts_label
                 ts_dir.mkdir(parents=True, exist_ok=True)
                 if save_per_timestamp:
-                    write_geotiff(emb.astype(np.float32), grid, ts_dir / "embedding.tif")
+                    emb_out = crop_to_user(emb, grid, user_grid, channel_axis=-1)
+                    write_geotiff(emb_out.astype(np.float32), user_grid, ts_dir / "embedding.tif")
                 if save_per_timestamp_input:
-                    # data is band-first: (C, H, W)
-                    write_geotiff(data.astype(np.float32), grid, ts_dir / "input.tif")
-                    # RGB preview
+                    # data is band-first: (C, H, W) — crop band-first
+                    data_out = crop_to_user(data, grid, user_grid, channel_axis=0)
+                    write_geotiff(data_out.astype(np.float32), user_grid, ts_dir / "input.tif")
+                    # RGB preview (from cropped input)
                     from PIL import Image
                     if sensor == "S2":
                         # S2 band order: [B02, B03, B04, B08, B05, B06, B07, B11, B12]
                         # RGB = B04, B03, B02 → indices 2, 1, 0
-                        rgb = np.stack([data[2], data[1], data[0]], axis=-1).astype(np.float32)
+                        rgb = np.stack([data_out[2], data_out[1], data_out[0]], axis=-1).astype(np.float32)
                         rgb = np.clip(rgb / 3000.0, 0, 1) ** (1/2.2)
                     else:
                         # S1: VV, VH → composite with ratio for third channel
-                        vv = 10 * np.log10(np.clip(data[0], 1e-6, None))
-                        vh = 10 * np.log10(np.clip(data[1], 1e-6, None))
+                        vv = 10 * np.log10(np.clip(data_out[0], 1e-6, None))
+                        vh = 10 * np.log10(np.clip(data_out[1], 1e-6, None))
                         ratio = vv - vh
                         def _norm(x):
                             lo, hi = np.percentile(x[np.isfinite(x)], [2, 98])
@@ -625,13 +780,14 @@ if generate_btn and "bbox" in st.session_state and st.session_state.bbox:
             norms = np.linalg.norm(avg, axis=-1, keepdims=True)
             avg = avg / np.clip(norms, 1e-8, None)
             avg[~covered] = 0
-            write_geotiff(avg, grid, output_dir / f"{year}.tif")
+            avg_out = crop_to_user(avg, grid, user_grid, channel_axis=-1)
+            write_geotiff(avg_out, user_grid, output_dir / f"{year}.tif")
 
-            # PCA previews
+            # PCA previews (fit on cropped annual, apply same basis to timestamps)
             progress.progress(yr_hi - 2, text=f"{yr_label}PCA previews...")
-            pca_state = fit_pca(avg)
+            pca_state = fit_pca(avg_out)
             annual_preview = output_dir / f"{year}_preview_pca.png"
-            write_pca_preview(avg, annual_preview, pca_state=pca_state)
+            write_pca_preview(avg_out, annual_preview, pca_state=pca_state)
             last_annual_preview = str(annual_preview)
 
             import rasterio
@@ -683,6 +839,17 @@ if generate_btn and "bbox" in st.session_state and st.session_state.bbox:
             "summary": "\n\n".join(all_summaries),
             "previews": all_previews,
         }
+
+        # Log request metadata asynchronously (fire-and-forget)
+        area_km2 = w_km * h_km
+        log_request(
+            bbox=bbox,
+            area_km2=area_km2,
+            years=years,
+            time_mode=time_mode,
+            save_per_timestamp=save_per_timestamp,
+            save_per_timestamp_input=save_per_timestamp_input,
+        )
 
         progress.progress(100, text="Done!")
         st.rerun()
