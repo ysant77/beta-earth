@@ -293,9 +293,9 @@ with st.sidebar:
         from datetime import date
         col_d1, col_d2 = st.columns(2)
         with col_d1:
-            start_date = st.date_input("Start", date(2023, 1, 1), min_value=date(2017, 1, 1))
+            start_date = st.date_input("Start", date(2023, 6, 1), min_value=date(2017, 1, 1))
         with col_d2:
-            end_date = st.date_input("End", date(2023, 12, 31), max_value=date(2025, 12, 31))
+            end_date = st.date_input("End", date(2023, 8, 31), max_value=date(2025, 12, 31))
         years = sorted(set(range(start_date.year, end_date.year + 1)))
         custom_dates = (str(start_date), str(end_date))
 
@@ -303,6 +303,8 @@ with st.sidebar:
     max_cloud = st.slider("Max cloud cover (%)", 5, 50, 20, step=5)
     save_per_timestamp = st.toggle("Save per-timestamp embeddings", value=True,
                                     help="Disable to only output the annual average (much smaller download)")
+    save_per_timestamp_input = st.toggle("Save per-timestamp input", value=False,
+                                          help="Also save the raw S2/S1 scene data used for each timestamp (large: adds raw bands per scene)")
 
     st.divider()
 
@@ -359,19 +361,11 @@ folium.TileLayer(
     overlay=False,
 ).add_to(m)
 
-# Stamen Terrain (togglable)
+# CartoDB Positron — clean minimal basemap (no API key needed)
 folium.TileLayer(
-    tiles="https://tiles.stadiamaps.com/tiles/stamen_terrain/{z}/{x}/{y}{r}.png",
-    attr="Stamen/Stadia",
-    name="Terrain",
-    overlay=False,
-).add_to(m)
-
-# Stamen Toner Lite — default (added last = shown first in Folium)
-folium.TileLayer(
-    tiles="https://tiles.stadiamaps.com/tiles/stamen_toner_lite/{z}/{x}/{y}{r}.png",
-    attr="Stamen/Stadia",
-    name="Toner Lite",
+    tiles="https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
+    attr="CartoDB",
+    name="Light",
     overlay=False,
     show=True,
 ).add_to(m)
@@ -386,19 +380,30 @@ folium.plugins.Draw(
     edit_options={"edit": False},
 ).add_to(m)
 
-# Auto-activate rectangle draw tool on map load
-if "bbox" not in st.session_state or not st.session_state.bbox:
-    auto_draw_js = folium.Element("""
-    <script>
-    document.addEventListener("DOMContentLoaded", function() {
+# Persist the drawn bbox as a visible rectangle + fit view, OR auto-activate
+# the draw tool if no bbox has been set yet.
+if "bbox" in st.session_state and st.session_state.bbox:
+    sbbox = st.session_state.bbox
+    folium.Rectangle(
+        bounds=[[sbbox[1], sbbox[0]], [sbbox[3], sbbox[2]]],
+        color="#ff6600", weight=3, fill=True, fill_opacity=0.1,
+    ).add_to(m)
+    m.fit_bounds([[sbbox[1], sbbox[0]], [sbbox[3], sbbox[2]]])
+else:
+    from branca.element import MacroElement
+    from jinja2 import Template
+
+    class AutoDrawRectangle(MacroElement):
+        _template = Template("""
+        {% macro script(this, kwargs) %}
         setTimeout(function() {
             var btn = document.querySelector('.leaflet-draw-draw-rectangle');
             if (btn) btn.click();
-        }, 500);
-    });
-    </script>
-    """)
-    m.get_root().html.add_child(auto_draw_js)
+        }, 300);
+        {% endmacro %}
+        """)
+
+    m.add_child(AutoDrawRectangle())
 
 # Add PCA overlay if results exist
 if "results" in st.session_state and st.session_state.results:
@@ -490,6 +495,14 @@ if generate_btn and "bbox" in st.session_state and st.session_state.bbox:
         # DEM (shared across years)
         progress.progress(8, text="Downloading DEM...")
         dem = download_dem(grid)
+        if save_per_timestamp_input:
+            write_geotiff(dem.astype(np.float32), grid, output_dir / "dem.tif")
+            # DEM preview — grayscale hillshade-style normalisation
+            from PIL import Image
+            d = dem[0].astype(np.float32)
+            lo, hi = np.percentile(d[np.isfinite(d)], [2, 98])
+            d_norm = np.clip((d - lo) / max(hi - lo, 1e-6), 0, 1)
+            Image.fromarray((d_norm * 255).astype(np.uint8)).save(output_dir / "dem_preview.png")
 
         all_previews = []
         all_summaries = []
@@ -506,9 +519,32 @@ if generate_btn and "bbox" in st.session_state and st.session_state.bbox:
 
             # Search
             progress.progress(yr_lo, text=f"{yr_label}Searching Planetary Computer...")
-            s2_items = _search_stac(bbox, year, "sentinel-2-l2a", max_cloud=max_cloud)
+            if custom_dates:
+                import pystac_client, planetary_computer
+                from datetime import date as _date
+                cd_start = _date.fromisoformat(custom_dates[0])
+                cd_end = _date.fromisoformat(custom_dates[1])
+                yr_start = max(cd_start, _date(year, 1, 1))
+                yr_end = min(cd_end, _date(year, 12, 31))
+                catalog = pystac_client.Client.open(
+                    "https://planetarycomputer.microsoft.com/api/stac/v1",
+                    modifier=planetary_computer.sign_inplace,
+                )
+                s2_items = list(catalog.search(
+                    collections=["sentinel-2-l2a"], bbox=list(bbox),
+                    datetime=f"{yr_start}/{yr_end}",
+                    query={"eo:cloud_cover": {"lt": max_cloud}},
+                    max_items=200,
+                ).items())
+                s1_items = list(catalog.search(
+                    collections=["sentinel-1-rtc"], bbox=list(bbox),
+                    datetime=f"{yr_start}/{yr_end}",
+                    max_items=200,
+                ).items())
+            else:
+                s2_items = _search_stac(bbox, year, "sentinel-2-l2a", max_cloud=max_cloud)
+                s1_items = _search_stac(bbox, year, "sentinel-1-rtc")
             s2_items = _seasonal_select(s2_items, max_per_quarter=6)
-            s1_items = _search_stac(bbox, year, "sentinel-1-rtc")
             s1_items = _seasonal_select(s1_items, max_per_quarter=1, use_cloud=False)
             total_found = len(s2_items) + len(s1_items)
 
@@ -555,6 +591,26 @@ if generate_btn and "bbox" in st.session_state and st.session_state.bbox:
                 ts_dir.mkdir(parents=True, exist_ok=True)
                 if save_per_timestamp:
                     write_geotiff(emb.astype(np.float32), grid, ts_dir / "embedding.tif")
+                if save_per_timestamp_input:
+                    # data is band-first: (C, H, W)
+                    write_geotiff(data.astype(np.float32), grid, ts_dir / "input.tif")
+                    # RGB preview
+                    from PIL import Image
+                    if sensor == "S2":
+                        # S2 band order: [B02, B03, B04, B08, B05, B06, B07, B11, B12]
+                        # RGB = B04, B03, B02 → indices 2, 1, 0
+                        rgb = np.stack([data[2], data[1], data[0]], axis=-1).astype(np.float32)
+                        rgb = np.clip(rgb / 3000.0, 0, 1) ** (1/2.2)
+                    else:
+                        # S1: VV, VH → composite with ratio for third channel
+                        vv = 10 * np.log10(np.clip(data[0], 1e-6, None))
+                        vh = 10 * np.log10(np.clip(data[1], 1e-6, None))
+                        ratio = vv - vh
+                        def _norm(x):
+                            lo, hi = np.percentile(x[np.isfinite(x)], [2, 98])
+                            return np.clip((x - lo) / max(hi - lo, 1e-6), 0, 1)
+                        rgb = np.stack([_norm(vv), _norm(vh), _norm(ratio)], axis=-1)
+                    Image.fromarray((rgb * 255).astype(np.uint8)).save(ts_dir / "preview_rgb.png")
                 used_scenes.append({"sensor": sensor, "date": str(dt.date()), "doy": doy, "coverage": round(cov, 1)})
 
             if not used_scenes:
@@ -602,6 +658,9 @@ if generate_btn and "bbox" in st.session_state and st.session_state.bbox:
                 png = ts_dir / "preview_pca.png"
                 if png.exists():
                     all_previews.append((str(png), f"{year}/{ts_dir.name}"))
+                rgb_png = ts_dir / "preview_rgb.png"
+                if rgb_png.exists():
+                    all_previews.append((str(rgb_png), f"{year}/{ts_dir.name} (RGB input)"))
 
             all_summaries.append(
                 f"**{year}:** {len(used_scenes)} scenes "
