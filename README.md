@@ -1,4 +1,4 @@
-<img width="1897" height="800" alt="beta-full-darkmode" src="https://github.com/user-attachments/assets/3817421d-ef21-42db-b5c4-c654890e44dd" />
+<img width="1897" height="800" alt="beta-final" src="https://github.com/user-attachments/assets/91b2a46c-a142-4eed-99ce-a1b692178146" />
 
 
 [![arXiv](https://img.shields.io/badge/arXiv-XXXX.XXXXX-b31b1b.svg)](https://arxiv.org/abs/XXXX.XXXXX)
@@ -25,6 +25,12 @@ BetaEarth has **no access to AEF's weights or architecture**. It is an independe
 - **Security research:** This work demonstrates that releasing embeddings may not be a risk-free alternative to releasing model weights.
 
 ---
+
+## Official Demo
+You can try to generate your own BetaEarth embeddings on HuggingFace: https://huggingface.co/spaces/asterisk-labs/betaearth
+<img width="1836" height="972" alt="Screenshot 2026-04-19 at 21 22 38" src="https://github.com/user-attachments/assets/3211fe9d-7949-48ec-9669-3e69d17b2678" />
+
+The same app can also be initalised locally if you'd like to use your own compute.
 
 ## Models
 
