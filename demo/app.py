@@ -204,27 +204,60 @@ st.markdown("""
     /* Mobile: inline the sidebar above the map (hamburger is hidden, so we
        can't rely on the user opening it). Desktop layout is unchanged. */
     @media (max-width: 768px) {
-        [data-testid="stAppViewContainer"] > section,
-        section.main,
-        [data-testid="stAppViewContainer"] {
+        /* Make the app container a flex column so sidebar + main stack */
+        [data-testid="stAppViewContainer"],
+        [data-testid="stApp"] > div {
+            display: flex !important;
             flex-direction: column !important;
         }
+
+        /* Completely neutralise the sidebar's mobile overlay behaviour */
         [data-testid="stSidebar"] {
-            position: static !important;
+            position: relative !important;
             width: 100% !important;
-            min-width: 100% !important;
+            min-width: 0 !important;
             max-width: 100% !important;
             height: auto !important;
+            min-height: 0 !important;
+            max-height: none !important;
             transform: none !important;
+            top: auto !important;
+            left: auto !important;
+            right: auto !important;
+            bottom: auto !important;
+            margin: 0 !important;
+            box-shadow: none !important;
             border-right: none !important;
             border-bottom: 1px solid #e8e8e8 !important;
-            order: -1;
+            z-index: auto !important;
+            order: -1 !important;
+            flex-shrink: 0 !important;
         }
+
+        /* Reset every descendant that might carry a 100vh height */
         [data-testid="stSidebar"] > div,
-        [data-testid="stSidebar"] [data-testid="stSidebarContent"] {
+        [data-testid="stSidebar"] > section,
+        [data-testid="stSidebar"] section,
+        [data-testid="stSidebar"] [data-testid="stSidebarContent"],
+        [data-testid="stSidebar"] [data-testid="stSidebarUserContent"] {
+            position: relative !important;
             height: auto !important;
             min-height: 0 !important;
+            max-height: none !important;
+            transform: none !important;
+            overflow: visible !important;
         }
+
+        /* Main content takes remaining space at full width */
+        [data-testid="stMain"],
+        section.main,
+        .main {
+            width: 100% !important;
+            min-width: 0 !important;
+            max-width: 100% !important;
+            flex: 1 1 auto !important;
+        }
+
         [data-testid="stSidebar"] .block-container {
             padding: 1rem !important;
         }
