@@ -89,6 +89,7 @@ def log_request(
     area_km2: float,
     years: list[int],
     time_mode: str,
+    custom_dates: tuple[str, str] | None,
     save_per_timestamp: bool,
     save_per_timestamp_input: bool,
 ) -> None:
@@ -116,6 +117,8 @@ def log_request(
         "area_km2": float(area_km2),
         "years": years,
         "time_mode": time_mode,
+        "custom_start": custom_dates[0] if custom_dates else None,
+        "custom_end": custom_dates[1] if custom_dates else None,
         "save_per_timestamp": bool(save_per_timestamp),
         "save_per_timestamp_input": bool(save_per_timestamp_input),
     }
@@ -615,6 +618,7 @@ if generate_btn and "bbox" in st.session_state and st.session_state.bbox:
             area_km2=w_km * h_km,
             years=years,
             time_mode=time_mode,
+            custom_dates=custom_dates,
             save_per_timestamp=save_per_timestamp,
             save_per_timestamp_input=save_per_timestamp_input,
         )
