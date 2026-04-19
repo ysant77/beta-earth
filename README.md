@@ -1,4 +1,4 @@
-<img width="2399" height="1240" alt="BetaEarth App" src="https://github.com/user-attachments/assets/1e1a39d2-eb5f-47a1-8ec2-c36e71e0a799" />
+<img width="2978" height="700" alt="2023_preview_pca" src="https://github.com/user-attachments/assets/de8baf2d-f24e-4dd7-8db4-1d5fa562d7d8" />
 <img width="1897" height="800" alt="beta-final" src="https://github.com/user-attachments/assets/91b2a46c-a142-4eed-99ce-a1b692178146" />
 
 
