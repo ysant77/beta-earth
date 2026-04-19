@@ -201,43 +201,47 @@ st.markdown("""
         font-size: 0.8rem !important;
     }
 
-    /* Mobile: inline the sidebar above the map (hamburger is hidden, so we
-       can't rely on the user opening it). Desktop layout is unchanged. */
+    /* Mobile: inline the sidebar above the map. Desktop layout is unchanged.
+       Streamlit wraps content in position:absolute + fixed-height containers
+       which collapse the sidebar under a grid/flex child-sized layout, so we
+       first neutralise the fixed positioning, then stack with flex. */
     @media (max-width: 768px) {
-        /* Make the app container a flex column so sidebar + main stack */
-        [data-testid="stAppViewContainer"],
-        [data-testid="stApp"] > div {
+        /* Break out of fixed absolute containers so the page flows vertically */
+        [data-testid="stApp"],
+        [data-testid="stAppViewContainer"] {
+            position: static !important;
+            height: auto !important;
+            min-height: 100vh !important;
+            max-height: none !important;
+            overflow: visible !important;
             display: flex !important;
             flex-direction: column !important;
         }
 
-        /* Completely neutralise the sidebar's mobile overlay behaviour */
+        /* Sidebar: sized to its content, at the top */
         [data-testid="stSidebar"] {
+            order: 0 !important;
             position: relative !important;
             width: 100% !important;
             min-width: 0 !important;
             max-width: 100% !important;
             height: auto !important;
-            min-height: 0 !important;
+            min-height: fit-content !important;
             max-height: none !important;
             transform: none !important;
-            top: auto !important;
-            left: auto !important;
-            right: auto !important;
-            bottom: auto !important;
+            top: auto !important; left: auto !important;
+            right: auto !important; bottom: auto !important;
             margin: 0 !important;
             box-shadow: none !important;
             border-right: none !important;
             border-bottom: 1px solid #e8e8e8 !important;
             z-index: auto !important;
-            order: -1 !important;
-            flex-shrink: 0 !important;
+            flex: 0 0 auto !important;
         }
 
-        /* Reset every descendant that might carry a 100vh height */
+        /* Sidebar descendants: allow natural height */
         [data-testid="stSidebar"] > div,
         [data-testid="stSidebar"] > section,
-        [data-testid="stSidebar"] section,
         [data-testid="stSidebar"] [data-testid="stSidebarContent"],
         [data-testid="stSidebar"] [data-testid="stSidebarUserContent"] {
             position: relative !important;
@@ -248,13 +252,21 @@ st.markdown("""
             overflow: visible !important;
         }
 
-        /* Main content takes remaining space at full width */
+        /* Main content wrapper (unnamed div sibling of stSidebar) + stMain */
+        [data-testid="stAppViewContainer"] > div,
         [data-testid="stMain"],
         section.main,
         .main {
+            order: 1 !important;
+            position: relative !important;
             width: 100% !important;
             min-width: 0 !important;
             max-width: 100% !important;
+            margin-left: 0 !important;
+            margin-right: 0 !important;
+            left: auto !important;
+            top: auto !important;
+            z-index: auto !important;
             flex: 1 1 auto !important;
         }
 
