@@ -30,7 +30,19 @@ BetaEarth has **no access to AEF's weights or architecture**. It is an independe
 You can try to generate your own BetaEarth embeddings on HuggingFace: https://huggingface.co/spaces/asterisk-labs/betaearth
 <img width="1836" height="972" alt="Screenshot 2026-04-19 at 21 22 38" src="https://github.com/user-attachments/assets/3211fe9d-7949-48ec-9669-3e69d17b2678" />
 
-The same app can also be initalised locally if you'd like to use your own compute.
+### Run the demo locally
+
+The same app can also be run locally if you'd like to use your own compute (e.g. a GPU for faster inference, or a larger bbox than the hosted Space allows):
+
+```bash
+git clone https://github.com/asterisk-labs/beta-earth
+cd beta-earth
+pip install 'betaearth[demo]'
+
+streamlit run demo/app.py
+```
+
+Then open http://localhost:8501 in your browser. The app downloads Sentinel-2 L2A + S1 RTC from [Planetary Computer](https://planetarycomputer.microsoft.com) at inference time, so it needs internet access but no API key. A CUDA GPU is used automatically if available.
 
 ## Models
 
