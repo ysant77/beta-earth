@@ -37,7 +37,7 @@ st.set_page_config(
     page_title="BetaEarth",
     page_icon="🥕",
     layout="wide",
-    initial_sidebar_state="auto",
+    initial_sidebar_state="expanded",
 )
 
 # ---------------------------------------------------------------------------
@@ -199,6 +199,39 @@ st.markdown("""
     [data-testid="stSidebar"] .stCaption {
         color: #888 !important;
         font-size: 0.8rem !important;
+    }
+
+    /* Mobile: inline the sidebar above the map (hamburger is hidden, so we
+       can't rely on the user opening it). Desktop layout is unchanged. */
+    @media (max-width: 768px) {
+        [data-testid="stAppViewContainer"] > section,
+        section.main,
+        [data-testid="stAppViewContainer"] {
+            flex-direction: column !important;
+        }
+        [data-testid="stSidebar"] {
+            position: static !important;
+            width: 100% !important;
+            min-width: 100% !important;
+            max-width: 100% !important;
+            height: auto !important;
+            transform: none !important;
+            border-right: none !important;
+            border-bottom: 1px solid #e8e8e8 !important;
+            order: -1;
+        }
+        [data-testid="stSidebar"] > div,
+        [data-testid="stSidebar"] [data-testid="stSidebarContent"] {
+            height: auto !important;
+            min-height: 0 !important;
+        }
+        [data-testid="stSidebar"] .block-container {
+            padding: 1rem !important;
+        }
+        .main .block-container,
+        [data-testid="stMain"] .block-container {
+            padding: 0 1rem 1rem 1rem !important;
+        }
     }
 
     /* Metrics — yellow accent border */
