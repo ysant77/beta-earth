@@ -44,6 +44,12 @@ streamlit run demo/app.py
 
 Then open http://localhost:8501 in your browser. The app downloads Sentinel-2 L2A + S1 RTC from [Planetary Computer](https://planetarycomputer.microsoft.com) at inference time, so it needs internet access but no API key. A CUDA GPU is used automatically if available.
 
+The hosted Space caps total output at 3 GB to keep CPU-only runs tractable. For local runs you can raise the limit via an env var:
+
+```bash
+BETAEARTH_MAX_OUTPUT_MB=50000 streamlit run demo/app.py   # 50 GB ceiling
+```
+
 ## Models
 
 We release **8 model variants** spanning different trade-offs between quality, parameter efficiency, and input requirements.

@@ -44,7 +44,9 @@ st.set_page_config(
 # Constants
 # ---------------------------------------------------------------------------
 RESOLUTION = 10.0
-MAX_OUTPUT_MB = 3000
+# Max total output size in MB. Overridable via env var for local runs:
+#   BETAEARTH_MAX_OUTPUT_MB=20000 streamlit run demo/app.py
+MAX_OUTPUT_MB = int(os.environ.get("BETAEARTH_MAX_OUTPUT_MB", "3000"))
 BYTES_PER_PIXEL = 64 * 4
 COMPRESSION_RATIO = 1.0   # embeddings are near-incompressible (L2-normed float32)
 HF_DATASET_REPO = "asterisk-labs/betaearth-requests"  # Private dataset for request logging
