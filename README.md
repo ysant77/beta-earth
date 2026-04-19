@@ -1,3 +1,4 @@
+<img width="2399" height="1240" alt="BetaEarth App" src="https://github.com/user-attachments/assets/1e1a39d2-eb5f-47a1-8ec2-c36e71e0a799" />
 <img width="1897" height="800" alt="beta-final" src="https://github.com/user-attachments/assets/91b2a46c-a142-4eed-99ce-a1b692178146" />
 
 
@@ -28,7 +29,8 @@ BetaEarth has **no access to AEF's weights or architecture**. It is an independe
 
 ## Official Demo
 You can try to generate your own BetaEarth embeddings on HuggingFace: https://huggingface.co/spaces/asterisk-labs/betaearth
-<img width="1836" height="972" alt="Screenshot 2026-04-19 at 21 22 38" src="https://github.com/user-attachments/assets/3211fe9d-7949-48ec-9669-3e69d17b2678" />
+<img width="2399" height="1240" alt="BetaEarth App" src="https://github.com/user-attachments/assets/167f6a0f-3216-4e43-96aa-bdf1490a68b4" />
+
 
 ### Run the demo locally
 
