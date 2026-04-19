@@ -21,7 +21,7 @@ import tempfile
 import threading
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import folium
@@ -53,76 +53,35 @@ HF_DATASET_REPO = "asterisk-labs/betaearth-requests"  # Private dataset for requ
 # ---------------------------------------------------------------------------
 # Request logging to HuggingFace Dataset
 # ---------------------------------------------------------------------------
-def _log_request_async(
-    timestamp: str,
-    bbox: tuple[float, float, float, float],
-    area_km2: float,
-    years: list[int],
-    time_mode: str,
-    save_per_timestamp: bool,
-    save_per_timestamp_input: bool,
-) -> None:
+def _log_request_async(hf_token: str, record: dict) -> None:
     """Fire-and-forget logging of request metadata to HuggingFace Dataset."""
+    import sys
+    import tempfile
     try:
-        from huggingface_hub import get_write_access_token
-        from pathlib import Path
-        import json
-        import tempfile
-
-        # Get HF token from Streamlit secrets (OAuth provider)
-        # If running on HF Spaces, HUGGINGFACE_TOKEN or HF_TOKEN env variable should be available
-        hf_token = st.secrets.get("HF_TOKEN")
-        if not hf_token:
-            hf_token = os.environ.get("HF_TOKEN")
-        if not hf_token:
-            return  # Silent fail if no token available
-
-        # Construct request record
-        record = {
-            "timestamp": timestamp,
-            "bbox_w": bbox[0],
-            "bbox_s": bbox[1],
-            "bbox_e": bbox[2],
-            "bbox_n": bbox[3],
-            "area_km2": float(area_km2),
-            "years": years,
-            "time_mode": time_mode,
-            "save_per_timestamp": bool(save_per_timestamp),
-            "save_per_timestamp_input": bool(save_per_timestamp_input),
-        }
-
-        # Write as JSON to a temporary file, append to dataset via parquet
         import pandas as pd
-        from huggingface_hub import CommitOperationAdd, HfApi, upload_file
+        from huggingface_hub import HfApi
 
-        # Create a single-row parquet file
         df = pd.DataFrame([record])
         with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as tmp:
             df.to_parquet(tmp.name, index=False)
             tmp_path = tmp.name
 
-        # Upload as a new commit to the dataset
-        # Using CommitOperationAdd to append a timestamped file
-        api = HfApi(token=hf_token)
-
-        # Create a unique file name based on timestamp to avoid collisions
-        timestamp_clean = timestamp.replace(":", "-").replace(".", "-")
+        timestamp_clean = record["timestamp"].replace(":", "-").replace(".", "-")
         file_name = f"requests/{timestamp_clean}.parquet"
 
-        # Upload the file
+        api = HfApi(token=hf_token)
         api.upload_file(
             path_or_fileobj=tmp_path,
             path_in_repo=file_name,
             repo_id=HF_DATASET_REPO,
             repo_type="dataset",
-            commit_message=f"Log request {timestamp}",
+            commit_message=f"Log request {record['timestamp']}",
         )
-
-        # Clean up temp file
         Path(tmp_path).unlink()
+        print(f"[log_request] Uploaded {file_name}", file=sys.stderr, flush=True)
     except Exception as e:
-        # Silent fail — don't interrupt user experience
-        pass
+        # Print to stderr so failures are visible in Space logs but don't interrupt UX
+        print(f"[log_request] FAILED: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
 
 
 def log_request(
@@ -134,10 +93,35 @@ def log_request(
     save_per_timestamp_input: bool,
 ) -> None:
     """Log request metadata asynchronously (fire-and-forget)."""
-    timestamp = datetime.utcnow().isoformat() + "Z"
+    import sys
+    # Read token from env (HF Spaces exposes secrets as env vars).
+    # st.secrets is read in main thread to avoid ScriptRunContext issues in threads.
+    hf_token = os.environ.get("HF_TOKEN")
+    if not hf_token:
+        try:
+            hf_token = st.secrets.get("HF_TOKEN")
+        except Exception:
+            hf_token = None
+    if not hf_token:
+        print("[log_request] No HF_TOKEN available, skipping log", file=sys.stderr, flush=True)
+        return
+
+    timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    record = {
+        "timestamp": timestamp,
+        "bbox_w": bbox[0],
+        "bbox_s": bbox[1],
+        "bbox_e": bbox[2],
+        "bbox_n": bbox[3],
+        "area_km2": float(area_km2),
+        "years": years,
+        "time_mode": time_mode,
+        "save_per_timestamp": bool(save_per_timestamp),
+        "save_per_timestamp_input": bool(save_per_timestamp_input),
+    }
     thread = threading.Thread(
         target=_log_request_async,
-        args=(timestamp, bbox, area_km2, years, time_mode, save_per_timestamp, save_per_timestamp_input),
+        args=(hf_token, record),
         daemon=True,
     )
     thread.start()
