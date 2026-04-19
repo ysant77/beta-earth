@@ -27,7 +27,7 @@ jobs:
 
           # requirements.txt
           cat > space/requirements.txt << 'EOF'
-          betaearth[generate]>=0.2.0
+          betaearth[generate]>=0.2.1
           streamlit-folium>=0.18
           folium>=0.15
           pandas>=1.3

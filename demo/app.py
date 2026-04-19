@@ -625,6 +625,16 @@ if generate_btn and "bbox" in st.session_state and st.session_state.bbox:
     if total_mb > MAX_OUTPUT_MB:
         st.error(f"Estimated output ({total_mb:.0f} MB) exceeds {MAX_OUTPUT_MB} MB limit. Select a smaller region or fewer years.")
     else:
+        # Log request metadata up-front so failed generations are also captured
+        log_request(
+            bbox=bbox,
+            area_km2=w_km * h_km,
+            years=years,
+            time_mode=time_mode,
+            save_per_timestamp=save_per_timestamp,
+            save_per_timestamp_input=save_per_timestamp_input,
+        )
+
         progress = st.progress(0, text="Loading model...")
 
         # Lazy imports
@@ -845,17 +855,6 @@ if generate_btn and "bbox" in st.session_state and st.session_state.bbox:
             "summary": "\n\n".join(all_summaries),
             "previews": all_previews,
         }
-
-        # Log request metadata asynchronously (fire-and-forget)
-        area_km2 = w_km * h_km
-        log_request(
-            bbox=bbox,
-            area_km2=area_km2,
-            years=years,
-            time_mode=time_mode,
-            save_per_timestamp=save_per_timestamp,
-            save_per_timestamp_input=save_per_timestamp_input,
-        )
 
         progress.progress(100, text="Done!")
         st.rerun()
