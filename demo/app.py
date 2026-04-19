@@ -517,7 +517,7 @@ folium.plugins.Draw(
     draw_options={
         "polyline": False, "polygon": False, "circle": False,
         "circlemarker": False, "marker": False,
-        "rectangle": {"shapeOptions": {"color": "#c4ffc2", "weight": 3, "fillOpacity": 0.1}},
+        "rectangle": {"shapeOptions": {"color": "#492ae8", "weight": 3, "fillOpacity": 0.1}},
     },
     edit_options={"edit": False},
 ).add_to(m)
@@ -528,7 +528,7 @@ if "bbox" in st.session_state and st.session_state.bbox:
     sbbox = st.session_state.bbox
     folium.Rectangle(
         bounds=[[sbbox[1], sbbox[0]], [sbbox[3], sbbox[2]]],
-        color="#c4ffc2", weight=3, fill=True, fill_opacity=0.1,
+        color="#492ae8", weight=3, fill=True, fill_opacity=0.1,
     ).add_to(m)
     m.fit_bounds([[sbbox[1], sbbox[0]], [sbbox[3], sbbox[2]]])
 else:
