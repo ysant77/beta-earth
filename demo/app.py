@@ -493,6 +493,12 @@ with st.sidebar:
         st.divider()
         st.caption(st.session_state.results["summary"])
 
+    st.divider()
+    st.caption(
+        "[GitHub](https://github.com/asterisk-labs/beta-earth) · "
+        "[Google Satellite Embedding (AEF)](https://developers.google.com/earth-engine/datasets/catalog/GOOGLE_SATELLITE_EMBEDDING_V1_ANNUAL)"
+    )
+
 
 
 # ---------------------------------------------------------------------------
