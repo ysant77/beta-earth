@@ -466,18 +466,48 @@ def estimate_size(
 
 
 def expand_to_min(bbox, min_km=MIN_SIDE_KM):
-    """Expand bbox symmetrically so each side >= min_km. Returns (new_bbox, was_padded)."""
+    """Return (was_padded, required_pad_px_x, required_pad_px_y). Pixels of padding
+    needed per side (east/west / north/south) so each side >= min_km. Padding is
+    computed in pixel space so it can be applied directly to the user grid's UTM
+    bounds — this avoids the UTM-conformal-distortion bug of re-projecting a
+    lon/lat-expanded bbox."""
     w, s, e, n = bbox
     lat_mid = (s + n) / 2
     width_km = (e - w) * 111 * abs(np.cos(np.radians(lat_mid)))
     height_km = (n - s) * 111
-    pad_x = pad_y = 0
-    if width_km < min_km:
-        pad_x = (min_km - width_km) / (2 * 111 * abs(np.cos(np.radians(lat_mid))))
-    if height_km < min_km:
-        pad_y = (min_km - height_km) / (2 * 111)
-    was_padded = (pad_x > 0) or (pad_y > 0)
-    return (w - pad_x, s - pad_y, e + pad_x, n + pad_y), was_padded
+    min_px = int(np.ceil(min_km * 1000 / RESOLUTION))
+    cur_px_x = int(np.ceil(width_km * 1000 / RESOLUTION))
+    cur_px_y = int(np.ceil(height_km * 1000 / RESOLUTION))
+    pad_px_x = max(0, (min_px - cur_px_x + 1) // 2)
+    pad_px_y = max(0, (min_px - cur_px_y + 1) // 2)
+    was_padded = pad_px_x > 0 or pad_px_y > 0
+    return was_padded, pad_px_x, pad_px_y
+
+
+def pad_grid_from_user(user_grid, pad_px_x, pad_px_y):
+    """Build a padded grid whose UTM bounds strictly contain user_grid, avoiding
+    UTM conformal distortion issues. The padded grid shares user_grid's CRS and
+    is aligned to its pixel lattice."""
+    import rasterio.transform
+
+    if pad_px_x == 0 and pad_px_y == 0:
+        return user_grid
+    h, w = user_grid["shape"]
+    xoff = user_grid["transform"].xoff - pad_px_x * RESOLUTION
+    yoff = user_grid["transform"].yoff + pad_px_y * RESOLUTION  # yoff is top, +north
+    new_w = w + 2 * pad_px_x
+    new_h = h + 2 * pad_px_y
+    new_transform = rasterio.transform.from_origin(xoff, yoff, RESOLUTION, RESOLUTION)
+    x1 = xoff + new_w * RESOLUTION
+    y0 = yoff - new_h * RESOLUTION
+    return {
+        "bbox_4326": user_grid["bbox_4326"],  # informational only
+        "epsg": user_grid["epsg"],
+        "crs": user_grid["crs"],
+        "transform": new_transform,
+        "bounds": (xoff, y0, x1, yoff),
+        "shape": (new_h, new_w),
+    }
 
 
 def crop_to_user(arr, pad_grid, user_grid, channel_axis=-1):
@@ -487,6 +517,12 @@ def crop_to_user(arr, pad_grid, user_grid, channel_axis=-1):
     col_off = round((user_grid["transform"].xoff - pad_grid["transform"].xoff) / RESOLUTION)
     row_off = round((pad_grid["transform"].yoff - user_grid["transform"].yoff) / RESOLUTION)
     out_h, out_w = user_grid["shape"]
+    # Defensive clamp — with pad_grid_from_user these should never go negative,
+    # but old call sites could still trigger the conformal-distortion bug.
+    if col_off < 0 or row_off < 0:
+        raise ValueError(
+            f"pad_grid does not contain user_grid: col_off={col_off}, row_off={row_off}"
+        )
     if channel_axis == 0:
         return arr[:, row_off:row_off + out_h, col_off:col_off + out_w]
     return arr[row_off:row_off + out_h, col_off:col_off + out_w, ...]
@@ -540,7 +576,7 @@ with st.sidebar:
             st.metric("Est. output", label, delta="OK", delta_color="normal")
         else:
             st.metric("Est. output", label, delta=f">{MAX_OUTPUT_MB} MB!", delta_color="inverse")
-        _, was_padded = expand_to_min(bbox)
+        was_padded, _, _ = expand_to_min(bbox)
         if was_padded:
             st.info(f"Small area — will be padded internally to {MIN_SIDE_KM} km per side, output cropped back.")
         st.code(f"W={bbox[0]:.4f}\nS={bbox[1]:.4f}\nE={bbox[2]:.4f}\nN={bbox[3]:.4f}", language=None)
@@ -751,8 +787,8 @@ if generate_btn and "bbox" in st.session_state and st.session_state.bbox:
         progress.progress(5, text=f"Model loaded on {device}")
 
         user_grid = compute_grid(bbox)
-        pad_bbox, was_padded = expand_to_min(bbox)
-        grid = compute_grid(pad_bbox) if was_padded else user_grid
+        was_padded, pad_px_x, pad_px_y = expand_to_min(bbox)
+        grid = pad_grid_from_user(user_grid, pad_px_x, pad_px_y) if was_padded else user_grid
         h, w = grid["shape"]
         out_h, out_w = user_grid["shape"]
 
