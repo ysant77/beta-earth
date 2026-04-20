@@ -182,6 +182,17 @@ st.markdown("""
     .block-container { padding: 0 2rem 2rem 2rem !important; max-width: 100% !important; }
     header[data-testid="stHeader"] { display: none !important; }
 
+    /* Links — use the brand purple everywhere */
+    a, a:link, a:visited,
+    .stMarkdown a, .stCaption a {
+        color: #492ae8 !important;
+        text-decoration: none !important;
+    }
+    a:hover, .stMarkdown a:hover, .stCaption a:hover {
+        color: #3a1fd0 !important;
+        text-decoration: underline !important;
+    }
+
     /* Sidebar */
     [data-testid="stSidebar"] {
         background: #fafafa !important;
@@ -532,8 +543,18 @@ def crop_to_user(arr, pad_grid, user_grid, channel_axis=-1):
 # Sidebar
 # ---------------------------------------------------------------------------
 with st.sidebar:
-    st.title("🥕 BetaEarth")
-    st.caption("Unofficial AlphaEarth Emulator for Sentinel-2 and Sentinel-1 Embeddings")
+    st.image(
+        "https://github.com/user-attachments/assets/91b2a46c-a142-4eed-99ce-a1b692178146",
+        use_container_width=True,
+    )
+    st.markdown(
+        "Open-source emulator of the AlphaEarth Foundations (AEF) embedding field. "
+        "Generate 10 m dense 64-band embeddings from Sentinel-2 + Sentinel-1."
+    )
+    st.markdown(
+        "[📦 GitHub](https://github.com/asterisk-labs/beta-earth) · "
+        "[🤗 Model Weights](https://huggingface.co/collections/asterisk-labs/beta-earth)"
+    )
     st.divider()
 
     time_mode = st.radio("Time range", ["Annual", "Custom dates"], horizontal=True)
@@ -580,6 +601,10 @@ with st.sidebar:
         if was_padded:
             st.info(f"Small area — will be padded internally to {MIN_SIDE_KM} km per side, output cropped back.")
         st.code(f"W={bbox[0]:.4f}\nS={bbox[1]:.4f}\nE={bbox[2]:.4f}\nN={bbox[3]:.4f}", language=None)
+        if st.button("🗑 Clear / redraw", use_container_width=True):
+            st.session_state.pop("bbox", None)
+            st.session_state.pop("results", None)
+            st.rerun()
     else:
         st.info("Draw a rectangle on the map")
 
@@ -608,8 +633,8 @@ with st.sidebar:
 # Map
 # ---------------------------------------------------------------------------
 m = folium.Map(
-    location=[48.5, 10.0],
-    zoom_start=5,
+    location=[20.0, 0.0],
+    zoom_start=2,
     tiles=None,
     control_scale=True,
 )
@@ -636,18 +661,84 @@ folium.plugins.Draw(
     draw_options={
         "polyline": False, "polygon": False, "circle": False,
         "circlemarker": False, "marker": False,
-        "rectangle": {"shapeOptions": {"color": "#492ae8", "weight": 3, "fillOpacity": 0.1}},
+        "rectangle": {
+            "showArea": True,  # live area tooltip while dragging
+            "metric": True,    # m² / km²
+            "shapeOptions": {"color": "#492ae8", "weight": 3, "fillOpacity": 0.1},
+        },
     },
     edit_options={"edit": False},
 ).add_to(m)
 
+# Compute max area (km²) for current settings so we can turn the rectangle
+# red *during* drawing when the user crosses the output cap. Matches estimate_size().
+_N_YEARS = len(years)
+_N_PIXELS_PER_KM2 = (1000 / RESOLUTION) ** 2   # = 10_000
+_MB_PER_KM2 = 2.56 * _N_YEARS                   # base: 1 annual 64-band tif per year
+if save_per_timestamp:
+    _MB_PER_KM2 += 2.56 * 28 * _N_YEARS        # ~28 per-timestamp embedding tifs
+if save_per_timestamp_input:
+    _MB_PER_KM2 += (0.36 * 24 + 0.08 * 4) * _N_YEARS  # raw S2 + S1 per timestamp
+_MAX_AREA_KM2 = MAX_OUTPUT_MB / max(_MB_PER_KM2, 1e-3)
+
+# Inject JS: (1) format live draw-tooltip as km² (Leaflet defaults to ha < 1 km²),
+#           (2) monkey-patch L.Draw.Rectangle._drawShape so the rectangle outline
+#               turns red live when area > _MAX_AREA_KM2.
+from branca.element import MacroElement as _MacroElement
+from jinja2 import Template as _Template
+
+class _LiveDrawFeedback(_MacroElement):
+    _template = _Template("""
+    {% macro script(this, kwargs) %}
+    (function () {
+        // Force km² display in the Leaflet.Draw area tooltip
+        if (L.GeometryUtil && L.GeometryUtil.readableArea) {
+            L.GeometryUtil.readableArea = function (area, isMetric, precision) {
+                var km2 = area / 1e6;
+                return km2.toFixed(km2 >= 10 ? 1 : 2) + ' km²';
+            };
+        }
+        // Live colour feedback on the rectangle being drawn
+        var MAX_KM2 = {{ this.max_km2 }};
+        var OK_COLOR = '#492ae8';
+        var OVER_COLOR = '#dc2626';
+        if (L.Draw && L.Draw.Rectangle) {
+            var orig = L.Draw.Rectangle.prototype._drawShape;
+            L.Draw.Rectangle.prototype._drawShape = function (latlng) {
+                orig.call(this, latlng);
+                if (this._shape) {
+                    var b = this._shape.getBounds();
+                    var w_m = b.getSouthWest().distanceTo(b.getSouthEast());
+                    var h_m = b.getSouthWest().distanceTo(b.getNorthWest());
+                    var km2 = (w_m * h_m) / 1e6;
+                    this._shape.setStyle({color: km2 > MAX_KM2 ? OVER_COLOR : OK_COLOR});
+                }
+            };
+        }
+    })();
+    {% endmacro %}
+    """)
+
+    def __init__(self, max_km2):
+        super().__init__()
+        self.max_km2 = max_km2
+
+m.add_child(_LiveDrawFeedback(max_km2=_MAX_AREA_KM2))
+
 # Persist the drawn bbox as a visible rectangle + fit view, OR auto-activate
-# the draw tool if no bbox has been set yet.
+# the draw tool if no bbox has been set yet. Rectangle turns red if the
+# current estimate would exceed the output cap.
 if "bbox" in st.session_state and st.session_state.bbox:
     sbbox = st.session_state.bbox
+    _, _, _est_mb = estimate_size(
+        sbbox, n_years=len(years),
+        save_per_timestamp=save_per_timestamp,
+        save_per_timestamp_input=save_per_timestamp_input,
+    )
+    _rect_color = "#dc2626" if _est_mb > MAX_OUTPUT_MB else "#492ae8"
     folium.Rectangle(
         bounds=[[sbbox[1], sbbox[0]], [sbbox[3], sbbox[2]]],
-        color="#492ae8", weight=3, fill=True, fill_opacity=0.1,
+        color=_rect_color, weight=3, fill=True, fill_opacity=0.1,
     ).add_to(m)
     m.fit_bounds([[sbbox[1], sbbox[0]], [sbbox[3], sbbox[2]]])
 else:
@@ -673,16 +764,16 @@ if "results" in st.session_state and st.session_state.results:
     bbox = res["bbox"]
     previews = res.get("previews", [])
 
-    # Find the selected preview frame
+    # Find the selected preview frame. previews is a list of (bytes, label).
     selected_label = st.session_state.get("preview_frame")
-    preview_path = None
+    preview_bytes = None
     if previews:
-        preview_map = {label: path for path, label in previews}
-        preview_path = preview_map.get(selected_label, previews[0][0])
+        preview_map = {label: data for data, label in previews}
+        preview_bytes = preview_map.get(selected_label, previews[0][0])
 
-    if preview_path and Path(preview_path).exists():
+    if preview_bytes:
         import base64
-        img_data = base64.b64encode(Path(preview_path).read_bytes()).decode()
+        img_data = base64.b64encode(preview_bytes).decode()
         img_url = f"data:image/png;base64,{img_data}"
         folium.raster_layers.ImageOverlay(
             image=img_url,
@@ -716,12 +807,30 @@ if map_data and map_data.get("all_drawings"):
         last = drawings[-1]
         if last["geometry"]["type"] == "Polygon":
             coords = last["geometry"]["coordinates"][0]
-            lons = [c[0] for c in coords]
-            lats = [c[1] for c in coords]
-            new_bbox = (min(lons), min(lats), max(lons), max(lats))
-            if st.session_state.get("bbox") != new_bbox:
-                st.session_state.bbox = new_bbox
-                st.rerun()  # rerun so sidebar picks up the new bbox immediately
+            # Leaflet lets users pan past ±180° and draw on "repeated" world
+            # copies, producing coordinates outside the valid range. Normalise
+            # each longitude into [-180, 180] before assembling a bbox.
+            def _wrap_lon(x: float) -> float:
+                return ((x + 180.0) % 360.0) - 180.0
+            lons_raw = [c[0] for c in coords]
+            lons = [_wrap_lon(x) for x in lons_raw]
+            lats = [max(-90.0, min(90.0, c[1])) for c in coords]
+            w, e = min(lons), max(lons)
+            # Detect an antimeridian-crossing draw: the raw span is small but
+            # after wrapping the bbox looks huge (covers most of the globe).
+            raw_span = max(lons_raw) - min(lons_raw)
+            wrapped_span = e - w
+            if raw_span < wrapped_span - 1e-6:
+                st.warning(
+                    "Your bbox crosses the antimeridian (±180°). BetaEarth doesn't "
+                    "support antimeridian-crossing AOIs yet — please redraw on a "
+                    "single side of the line."
+                )
+            else:
+                new_bbox = (w, min(lats), e, max(lats))
+                if st.session_state.get("bbox") != new_bbox:
+                    st.session_state.bbox = new_bbox
+                    st.rerun()  # rerun so sidebar picks up the new bbox immediately
 
 
 # ---------------------------------------------------------------------------
@@ -778,6 +887,7 @@ if generate_btn and "bbox" in st.session_state and st.session_state.bbox:
         import torch
         from betaearth.generate import (
             compute_grid, download_dem, download_s2, download_s1,
+            download_s2_cloud_mask,
             _search_stac, _seasonal_select, check_coverage,
             write_geotiff, fit_pca, write_pca_preview,
         )
@@ -801,7 +911,7 @@ if generate_btn and "bbox" in st.session_state and st.session_state.bbox:
         dem = download_dem(grid)
         if save_per_timestamp_input:
             dem_out = crop_to_user(dem, grid, user_grid, channel_axis=0)
-            write_geotiff(dem_out.astype(np.float32), user_grid, output_dir / "dem.tif")
+            write_geotiff(dem_out.astype(np.float32), user_grid, output_dir / "dem.tif", band_first=True)
             # DEM preview (from cropped array)
             from PIL import Image
             d = dem_out[0].astype(np.float32)
@@ -822,7 +932,9 @@ if generate_btn and "bbox" in st.session_state and st.session_state.bbox:
             files_dir = output_dir / f"{year}_files"
             files_dir.mkdir()
 
-            # Search
+            # Search. We deliberately don't filter by cloud at search time — the
+            # filter is applied per-quarter in _seasonal_select with a fallback
+            # so summer quarters don't get dropped entirely in cloudy regions.
             progress.progress(yr_lo, text=f"{yr_label}Searching Planetary Computer...")
             if custom_dates:
                 import pystac_client, planetary_computer
@@ -838,7 +950,6 @@ if generate_btn and "bbox" in st.session_state and st.session_state.bbox:
                 s2_items = list(catalog.search(
                     collections=["sentinel-2-l2a"], bbox=list(bbox),
                     datetime=f"{yr_start}/{yr_end}",
-                    query={"eo:cloud_cover": {"lt": max_cloud}},
                     max_items=200,
                 ).items())
                 s1_items = list(catalog.search(
@@ -847,9 +958,9 @@ if generate_btn and "bbox" in st.session_state and st.session_state.bbox:
                     max_items=200,
                 ).items())
             else:
-                s2_items = _search_stac(bbox, year, "sentinel-2-l2a", max_cloud=max_cloud)
+                s2_items = _search_stac(bbox, year, "sentinel-2-l2a")
                 s1_items = _search_stac(bbox, year, "sentinel-1-rtc")
-            s2_items = _seasonal_select(s2_items, max_per_quarter=6)
+            s2_items = _seasonal_select(s2_items, max_per_quarter=6, max_cloud=max_cloud)
             s1_items = _seasonal_select(s1_items, max_per_quarter=1, use_cloud=False)
             total_found = len(s2_items) + len(s1_items)
 
@@ -860,37 +971,52 @@ if generate_btn and "bbox" in st.session_state and st.session_state.bbox:
             all_items = [(it, "S2") for it in s2_items] + [(it, "S1") for it in s1_items]
             n_total = len(all_items)
             skipped = 0
+            failed = 0
 
             for i, (item, sensor) in enumerate(all_items):
                 pct = yr_lo + int((yr_hi - yr_lo - 10) * i / max(n_total, 1))
                 dt = item.datetime
                 doy = dt.timetuple().tm_yday
 
-                if sensor == "S2":
-                    mgrs = item.properties.get("s2:mgrs_tile", "???")
-                    cc = item.properties.get("eo:cloud_cover", 0)
-                    progress.progress(pct, text=f"{yr_label}[{i+1}/{n_total}] S2 {mgrs} {dt.date()} (cloud={cc:.0f}%)")
-                    data = download_s2(item, grid)
-                else:
-                    progress.progress(pct, text=f"{yr_label}[{i+1}/{n_total}] S1 {dt.date()}")
-                    data = download_s1(item, grid)
+                try:
+                    if sensor == "S2":
+                        mgrs = item.properties.get("s2:mgrs_tile", "???")
+                        cc = item.properties.get("eo:cloud_cover", 0)
+                        progress.progress(pct, text=f"{yr_label}[{i+1}/{n_total}] S2 {mgrs} {dt.date()} (cloud={cc:.0f}%)")
+                        data = download_s2(item, grid)
+                    else:
+                        progress.progress(pct, text=f"{yr_label}[{i+1}/{n_total}] S1 {dt.date()}")
+                        data = download_s1(item, grid)
 
-                cov = check_coverage(data)
-                if cov < min_coverage:
-                    skipped += 1
+                    cov = check_coverage(data)
+                    if cov < min_coverage:
+                        skipped += 1
+                        continue
+
+                    progress.progress(pct + 1, text=f"{yr_label}[{i+1}/{n_total}] Predicting {sensor} {dt.date()}...")
+                    if sensor == "S2":
+                        emb = model.predict(s2_l2a=data, dem=dem, doy=doy, tile_size=224, overlap=112)
+                        ts_label = f"{dt.date()}_s2"
+                        # SCL-based per-pixel cloud/shadow mask (None if asset missing)
+                        cloud_mask = download_s2_cloud_mask(item, grid)
+                    else:
+                        emb = model.predict(s1=data, dem=dem, doy=doy, tile_size=224, overlap=112)
+                        ts_label = f"{dt.date()}_s1"
+                        cloud_mask = None
+
+                    valid = np.linalg.norm(emb, axis=-1) > 1e-6
+                    if cloud_mask is not None:
+                        valid &= cloud_mask
+                    emb_sum[valid] += emb[valid]
+                    emb_count[valid] += 1
+                except Exception as _scene_err:  # noqa: BLE001
+                    failed += 1
+                    print(
+                        f"[scene] FAILED {sensor} {getattr(item, 'id', '?')}: "
+                        f"{type(_scene_err).__name__}: {_scene_err}",
+                        flush=True,
+                    )
                     continue
-
-                progress.progress(pct + 1, text=f"{yr_label}[{i+1}/{n_total}] Predicting {sensor} {dt.date()}...")
-                if sensor == "S2":
-                    emb = model.predict(s2_l2a=data, dem=dem, doy=doy, tile_size=224, overlap=112)
-                    ts_label = f"{dt.date()}_s2"
-                else:
-                    emb = model.predict(s1=data, dem=dem, doy=doy, tile_size=224, overlap=112)
-                    ts_label = f"{dt.date()}_s1"
-
-                valid = np.linalg.norm(emb, axis=-1) > 1e-6
-                emb_sum[valid] += emb[valid]
-                emb_count[valid] += 1
 
                 ts_dir = files_dir / ts_label
                 ts_dir.mkdir(parents=True, exist_ok=True)
@@ -900,7 +1026,7 @@ if generate_btn and "bbox" in st.session_state and st.session_state.bbox:
                 if save_per_timestamp_input:
                     # data is band-first: (C, H, W) — crop band-first
                     data_out = crop_to_user(data, grid, user_grid, channel_axis=0)
-                    write_geotiff(data_out.astype(np.float32), user_grid, ts_dir / "input.tif")
+                    write_geotiff(data_out.astype(np.float32), user_grid, ts_dir / "input.tif", band_first=True)
                     # RGB preview (from cropped input)
                     from PIL import Image
                     if sensor == "S2":
@@ -983,14 +1109,33 @@ if generate_btn and "bbox" in st.session_state and st.session_state.bbox:
         with open(zip_file, "rb") as f:
             zip_data = f.read()
 
+        # Read previews into memory so we can clean up the tempdir immediately.
+        # Each PNG is ~4 MB — cheaper than leaving a multi-GB tempdir per user.
+        previews_in_mem = []
+        annual_preview_bytes = None
+        for ppath, plabel in all_previews:
+            p = Path(ppath)
+            if p.exists():
+                previews_in_mem.append((p.read_bytes(), plabel))
+        if last_annual_preview and Path(last_annual_preview).exists():
+            annual_preview_bytes = Path(last_annual_preview).read_bytes()
+
         st.session_state.results = {
             "bbox": list(bbox),
             "zip_data": zip_data,
             "zip_name": f"betaearth_{run_id}.zip",
-            "annual_preview": last_annual_preview,
+            "annual_preview": annual_preview_bytes,
             "summary": "\n\n".join(all_summaries),
-            "previews": all_previews,
+            "previews": previews_in_mem,
         }
+
+        # Clean up tempdir now that everything we need is in session_state.
+        # Previously these accumulated across every Generate click until the
+        # Space was restarted (bug 5).
+        try:
+            shutil.rmtree(output_dir.parent, ignore_errors=True)
+        except Exception:
+            pass
 
         progress.progress(100, text="Done!")
         st.rerun()
@@ -1021,7 +1166,6 @@ if "results" in st.session_state and st.session_state.results:
 
         st.subheader("PCA-RGB Previews")
         cols = st.columns(min(len(previews), 5))
-        for i, (path, label) in enumerate(previews):
+        for i, (img_bytes, label) in enumerate(previews):
             with cols[i % len(cols)]:
-                if Path(path).exists():
-                    st.image(path, caption=label, use_container_width=True)
+                st.image(img_bytes, caption=label, use_container_width=True)

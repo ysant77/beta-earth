@@ -111,9 +111,22 @@ def compute_grid(bbox_4326):
     from pyproj import CRS, Transformer
     import rasterio.transform
 
-    lon_mid = (bbox_4326[0] + bbox_4326[2]) / 2
+    w, s, e, n = bbox_4326
+    if w > e:
+        raise ValueError(
+            f"Bounding box crosses the antimeridian (west={w} > east={e}). "
+            "Not supported — please split into two bboxes on either side of ±180°."
+        )
+    if n <= s:
+        raise ValueError(f"Invalid bounding box: north ({n}) must be > south ({s}).")
+    if abs(s) > 84 or abs(n) > 84:
+        raise ValueError(
+            f"Bounding box exceeds UTM coverage (|lat| > 84°). Use UPS instead."
+        )
+
+    lon_mid = (w + e) / 2
     utm_zone = int((lon_mid + 180) / 6) + 1
-    hemisphere = "north" if (bbox_4326[1] + bbox_4326[3]) / 2 >= 0 else "south"
+    hemisphere = "north" if (s + n) / 2 >= 0 else "south"
     epsg = 32600 + utm_zone if hemisphere == "north" else 32700 + utm_zone
     crs = CRS.from_epsg(epsg)
 
@@ -144,7 +157,12 @@ def compute_grid(bbox_4326):
 # Data download (Planetary Computer)
 # ---------------------------------------------------------------------------
 def _search_stac(bbox, year, collection, max_cloud=None, max_items=200):
-    """Search Planetary Computer STAC for items."""
+    """Search Planetary Computer STAC for items.
+
+    Note: callers are encouraged to pass max_cloud=None and apply cloud filtering
+    in _seasonal_select instead — this preserves seasonal balance in temperate
+    zones where summer is cloudier than winter (so a hard cloud filter ends up
+    heavily winter-biasing the annual mosaic)."""
     import pystac_client
     import planetary_computer
 
@@ -162,8 +180,15 @@ def _search_stac(bbox, year, collection, max_cloud=None, max_items=200):
     return list(search.items())
 
 
-def _seasonal_select(items, max_per_quarter=6, use_cloud=True):
-    """Select up to max_per_quarter items per quarter, sorted by quality."""
+def _seasonal_select(items, max_per_quarter=6, use_cloud=True, max_cloud=None):
+    """Select up to max_per_quarter items per quarter.
+
+    If max_cloud is given, scenes under that threshold are strongly preferred,
+    but if a quarter has *no* scenes under the threshold we fall back to its
+    least-cloudy scene anyway — preserving seasonal balance over strict cloud
+    filtering (a common failure mode in temperate/tropical regions where summer
+    is the cloudiest quarter).
+    """
     quarters = {1: [], 2: [], 3: [], 4: []}
     for item in items:
         q = (item.datetime.month - 1) // 3 + 1
@@ -172,10 +197,28 @@ def _seasonal_select(items, max_per_quarter=6, use_cloud=True):
     selected = []
     for q in range(1, 5):
         pool = quarters[q]
+        if not pool:
+            continue
         if use_cloud:
-            pool.sort(key=lambda x: x.properties.get("eo:cloud_cover", 100))
+            pool = sorted(pool, key=lambda x: x.properties.get("eo:cloud_cover", 100))
+            if max_cloud is not None:
+                under = [x for x in pool if x.properties.get("eo:cloud_cover", 100) < max_cloud]
+                pool = under if under else pool[:1]  # seasonal-balance fallback
         selected.extend(pool[:max_per_quarter])
     return selected
+
+
+def download_s2_cloud_mask(item, grid):
+    """Fetch the Sentinel-2 Scene Classification Layer and return a bool mask
+    of *usable* pixels (True = keep). Classes rejected: 0 nodata, 1 saturated,
+    3 shadow, 8 cloud-med, 9 cloud-high, 10 thin cirrus. Snow/ice (11) is kept
+    because for many AOIs it IS the winter land cover."""
+    asset = item.assets.get("SCL") or item.assets.get("scl")
+    if asset is None:
+        return None
+    scl = download_reprojected(asset.href, grid).astype(np.uint8)
+    bad = np.isin(scl, (0, 1, 3, 8, 9, 10))
+    return ~bad
 
 
 def download_reprojected(url, grid):
@@ -285,6 +328,9 @@ def write_geotiff(arr, grid, path, band_first=False):
         "compress": "zstd", "zstd_level": 9, "predictor": predictor,
         "tiled": True, "blockxsize": 256, "blockysize": 256,
         "interleave": "pixel",
+        # Auto-promote to BigTIFF when the raw payload would exceed 4 GB
+        # (standard TIFF offsets are 32-bit). Covers large AOIs / 64-band outputs.
+        "bigtiff": "IF_SAFER",
     }
     try:
         with rasterio.open(path, "w", **profile) as dst:
@@ -368,13 +414,16 @@ def generate(
     """Full pipeline: search -> download -> predict -> write."""
 
     # --- Search ---
+    # We deliberately don't filter by cloud at search time. The cloud filter
+    # is applied in _seasonal_select with a per-quarter fallback so the annual
+    # mosaic stays seasonally balanced even if summer is mostly cloudy.
     log.info("Searching Planetary Computer for %d ...", year)
     t0 = time.time()
 
-    s2_items = _search_stac(bbox_4326, year, "sentinel-2-l2a", max_cloud=max_cloud)
-    s2_items = _seasonal_select(s2_items, max_per_quarter=max_per_quarter)
-    s1_items = _search_stac(bbox_4326, year, "sentinel-1-rtc")
-    s1_items = _seasonal_select(s1_items, max_per_quarter=1, use_cloud=False)
+    s2_all = _search_stac(bbox_4326, year, "sentinel-2-l2a")
+    s2_items = _seasonal_select(s2_all, max_per_quarter=max_per_quarter, max_cloud=max_cloud)
+    s1_all = _search_stac(bbox_4326, year, "sentinel-1-rtc")
+    s1_items = _seasonal_select(s1_all, max_per_quarter=1, use_cloud=False)
 
     log.info("  Found %d S2 L2A + %d S1 RTC scenes (%s)", len(s2_items), len(s1_items), _elapsed(t0))
 
@@ -400,14 +449,17 @@ def generate(
     files_dir = output_dir / f"{year}_files"
     used_scenes = []
 
-    def _accumulate(emb):
+    def _accumulate(emb, pixel_mask=None):
         valid = np.linalg.norm(emb, axis=-1) > 1e-6
+        if pixel_mask is not None:
+            valid &= pixel_mask
         emb_sum[valid] += emb[valid]
         emb_count[valid] += 1
 
     total_scenes = len(s2_items) + len(s1_items)
     scene_num = 0
     skipped = 0
+    failed = 0
 
     for item in s2_items:
         scene_num += 1
@@ -417,22 +469,35 @@ def generate(
         mgrs = item.properties.get("s2:mgrs_tile", "???")
         log.info("[%d/%d] S2 %s %s (cloud=%.0f%%) ...", scene_num, total_scenes, mgrs, dt.date(), cc)
 
-        t0 = time.time()
-        s2_data = download_s2(item, grid)
-        cov = check_coverage(s2_data)
+        try:
+            t0 = time.time()
+            s2_data = download_s2(item, grid)
+            cov = check_coverage(s2_data)
 
-        if cov < min_coverage:
-            log.info("  Skipped: %.0f%% coverage < %.0f%% threshold", cov, min_coverage)
-            skipped += 1
+            if cov < min_coverage:
+                log.info("  Skipped: %.0f%% coverage < %.0f%% threshold", cov, min_coverage)
+                skipped += 1
+                continue
+
+            # Per-pixel cloud/shadow mask from the SCL band. Falls back to
+            # "keep all" if the SCL asset is missing (older S2 collections).
+            cloud_mask = download_s2_cloud_mask(item, grid)
+            if cloud_mask is not None:
+                kept = float(cloud_mask.mean())
+                log.info("  Downloaded (%.0f%% cov, %.0f%% pixels usable, %s)",
+                         cov, 100 * kept, _elapsed(t0))
+            else:
+                log.info("  Downloaded (%.0f%% cov, no SCL mask, %s)", cov, _elapsed(t0))
+
+            t0 = time.time()
+            emb = model.predict(s2_l2a=s2_data, dem=dem, doy=doy,
+                                tile_size=224, overlap=overlap)
+            _accumulate(emb, pixel_mask=cloud_mask)
+            log.info("  Predicted (%s)", _elapsed(t0))
+        except Exception as e:  # noqa: BLE001
+            log.warning("  FAILED: %s: %s — skipping scene", type(e).__name__, e)
+            failed += 1
             continue
-
-        log.info("  Downloaded (%.0f%% coverage, %s)", cov, _elapsed(t0))
-
-        t0 = time.time()
-        emb = model.predict(s2_l2a=s2_data, dem=dem, doy=doy,
-                            tile_size=224, overlap=overlap)
-        _accumulate(emb)
-        log.info("  Predicted (%s)", _elapsed(t0))
 
         # Save per-timestamp
         ts_dir = files_dir / f"{dt.date()}_s2"
@@ -462,22 +527,27 @@ def generate(
         doy = dt.timetuple().tm_yday
         log.info("[%d/%d] S1 %s ...", scene_num, total_scenes, dt.date())
 
-        t0 = time.time()
-        s1_data = download_s1(item, grid)
-        cov = check_coverage(s1_data)
+        try:
+            t0 = time.time()
+            s1_data = download_s1(item, grid)
+            cov = check_coverage(s1_data)
 
-        if cov < min_coverage:
-            log.info("  Skipped: %.0f%% coverage < %.0f%% threshold", cov, min_coverage)
-            skipped += 1
+            if cov < min_coverage:
+                log.info("  Skipped: %.0f%% coverage < %.0f%% threshold", cov, min_coverage)
+                skipped += 1
+                continue
+
+            log.info("  Downloaded (%.0f%% coverage, %s)", cov, _elapsed(t0))
+
+            t0 = time.time()
+            emb = model.predict(s1=s1_data, dem=dem, doy=doy,
+                                tile_size=224, overlap=overlap)
+            _accumulate(emb)
+            log.info("  Predicted (%s)", _elapsed(t0))
+        except Exception as e:  # noqa: BLE001
+            log.warning("  FAILED: %s: %s — skipping scene", type(e).__name__, e)
+            failed += 1
             continue
-
-        log.info("  Downloaded (%.0f%% coverage, %s)", cov, _elapsed(t0))
-
-        t0 = time.time()
-        emb = model.predict(s1=s1_data, dem=dem, doy=doy,
-                            tile_size=224, overlap=overlap)
-        _accumulate(emb)
-        log.info("  Predicted (%s)", _elapsed(t0))
 
         ts_dir = files_dir / f"{dt.date()}_s1"
         if save_per_timestamp_embedding or save_scenes:
@@ -506,7 +576,8 @@ def generate(
     log.info("=" * 50)
     log.info("  Scenes found:    %d", total_scenes)
     log.info("  Scenes used:     %d (>= %.0f%% coverage)", len(used_scenes), min_coverage)
-    log.info("  Scenes skipped:  %d", skipped)
+    log.info("  Scenes skipped:  %d (below coverage threshold)", skipped)
+    log.info("  Scenes failed:   %d (download/inference error)", failed)
 
     covered = emb_count > 0
     if not covered.any():
@@ -537,13 +608,14 @@ def generate(
     pca_state = fit_pca(avg)
     write_pca_preview(avg, output_dir / f"{year}_preview_pca.png", pca_state=pca_state)
 
-    import rasterio
-    for ts_dir in sorted(files_dir.iterdir()):
-        emb_tif = ts_dir / "embedding.tif"
-        if emb_tif.exists():
-            with rasterio.open(emb_tif) as src:
-                ts_emb = src.read().transpose(1, 2, 0)
-            write_pca_preview(ts_emb, ts_dir / "preview_pca.png", pca_state=pca_state)
+    if files_dir.exists():
+        import rasterio
+        for ts_dir in sorted(files_dir.iterdir()):
+            emb_tif = ts_dir / "embedding.tif"
+            if emb_tif.exists():
+                with rasterio.open(emb_tif) as src:
+                    ts_emb = src.read().transpose(1, 2, 0)
+                write_pca_preview(ts_emb, ts_dir / "preview_pca.png", pca_state=pca_state)
 
     # --- Manifest ---
     # Try to extract model provenance (best-effort — attributes vary by variant)
@@ -584,6 +656,7 @@ def generate(
         "n_scenes_found": total_scenes,
         "n_scenes_used": len(used_scenes),
         "n_scenes_skipped": skipped,
+        "n_scenes_failed": failed,
         "scenes": used_scenes,
     }
     manifest_path = output_dir / f"{year}_manifest.json"
