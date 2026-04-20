@@ -1,4 +1,3 @@
-<img width="2978" height="700" alt="2023_preview_pca" src="https://github.com/user-attachments/assets/de8baf2d-f24e-4dd7-8db4-1d5fa562d7d8" />
 <img width="1897" height="800" alt="beta-final" src="https://github.com/user-attachments/assets/91b2a46c-a142-4eed-99ce-a1b692178146" />
 
 
@@ -14,7 +13,7 @@
 ---
 
 ## What is BetaEarth?
-
+<img width="2978" height="750" alt="2023_preview_pca" src="https://github.com/user-attachments/assets/de8baf2d-f24e-4dd7-8db4-1d5fa562d7d8" />
 BetaEarth is an open-source model that produces **dense 10m geospatial embedding fields** from Sentinel-2 and Sentinel-1 imagery. It is trained to reproduce the outputs of [AlphaEarth Foundations](https://developers.google.com/earth-engine/datasets/catalog/GOOGLE_SATELLITE_EMBEDDING_V1_ANNUAL) (AEF) — a closed-source embedding model released by Google and Google DeepMind — using only AEF's publicly available precomputed embeddings as supervision.
 
 BetaEarth has **no access to AEF's weights or architecture**. It is an independent model, not a variant or extension of AEF.
