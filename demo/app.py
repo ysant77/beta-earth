@@ -1,7 +1,9 @@
 """BetaEarth Embedding Generator — Streamlit Demo.
 
-Interactive map-based interface for generating dense 10m geospatial
+Interactive map-based interface for generating dense 10 m geospatial
 embeddings. Deployable on HuggingFace Spaces.
+
+Requires betaearth>=0.2.3 (download_s2_cloud_mask, antimeridian check, etc.).
 
 Usage:
     cd demo && streamlit run app.py
