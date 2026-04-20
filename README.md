@@ -29,34 +29,23 @@ BetaEarth has **no access to AEF's weights or architecture**. It is an independe
 
 ---
 
-## Official Demo
-You can try to generate your own BetaEarth embeddings on HuggingFace: https://huggingface.co/spaces/asterisk-labs/betaearth
+## Generate embeddings for any area
+
+Four entry points, from zero-install to fully scripted.
+
+### 1. Hosted demo (no install)
+
+Pick a bounding box on a map, click run: [huggingface.co/spaces/asterisk-labs/betaearth](https://huggingface.co/spaces/asterisk-labs/betaearth). Free tier is CPU-only and caps total output at 3 GB.
+
 <img width="2399" height="1240" alt="BetaEarth App" src="https://github.com/user-attachments/assets/167f6a0f-3216-4e43-96aa-bdf1490a68b4" />
 
+### 2. Colab notebook (recommended for first try) <a href="https://colab.research.google.com/github/asterisk-labs/beta-earth/blob/main/examples/generate_demo.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" align="center"/></a>
 
-### Run the demo locally
+[`examples/generate_demo.ipynb`](examples/generate_demo.ipynb) walks through the full pipeline in a notebook: `pip install betaearth[generate]`, pick an AOI on an interactive map, run one cell, visualise annual + per-timestamp PCA-RGB previews side-by-side. Uses Colab's free T4 GPU.
 
-The same app can also be run locally if you'd like to use your own compute (e.g. a GPU for faster inference, or a larger bbox than the hosted Space allows):
+### 3. Command-line generation (the main path for real work)
 
-```bash
-git clone https://github.com/asterisk-labs/beta-earth
-cd beta-earth
-pip install 'betaearth[demo]'
-
-streamlit run demo/app.py
-```
-
-Then open http://localhost:8501 in your browser. The app downloads Sentinel-2 L2A + S1 RTC from [Planetary Computer](https://planetarycomputer.microsoft.com) at inference time, so it needs internet access but no API key. A CUDA GPU is used automatically if available.
-
-The hosted Space caps total output at 3 GB to keep CPU-only runs tractable. For local runs you can raise the limit via an env var:
-
-```bash
-BETAEARTH_MAX_OUTPUT_MB=50000 streamlit run demo/app.py   # 50 GB ceiling
-```
-
-### Generate a custom dataset (CLI)
-
-For larger / scripted runs, use the `betaearth-generate` CLI that ships with the package. It drives the same pipeline as the Streamlit demo — download Sentinel-2 L2A + Sentinel-1 RTC + COP-DEM from Planetary Computer, run tiled inference, write an annual 64-band GeoTIFF plus a full provenance manifest per year.
+`betaearth-generate` ships with the package and drives the same pipeline: download Sentinel-2 L2A + Sentinel-1 RTC + COP-DEM from [Planetary Computer](https://planetarycomputer.microsoft.com), run tiled inference, write an annual 64-band COG plus a full provenance manifest per year.
 
 ```bash
 pip install 'betaearth[generate]'
@@ -69,7 +58,7 @@ betaearth-generate --bbox 13.1 48.7 13.8 49.2 --years 2020 2021 2022 2023 2024 2
 betaearth-generate --osm_relation 1864214 --years 2024 --output_dir outputs/bav
 ```
 
-Each run produces, per year:
+No API keys needed — Planetary Computer is publicly accessible. A CUDA GPU is used automatically if available; CPU works but is slower. Each run produces, per year:
 
 | File | Description |
 |---|---|
@@ -78,7 +67,24 @@ Each run produces, per year:
 | `{year}_manifest.json` | Provenance: model repo + version, CRS/bounds/shape, acquisition params, full STAC id list of every scene used (cloud cover, coverage, S1 orbit/polarisation, ...) |
 | `{year}_files/{date}_{sensor}/` | Optional per-scene outputs, only with `--save_per_timestamp_embedding` / `--save_scenes` |
 
-The manifest is deliberately verbose so any user of the embedding can verify exactly which Sentinel products fed into it. See `betaearth.generate` for the Python API.
+The manifest is deliberately verbose so any downstream user of the embedding can verify exactly which Sentinel products fed into it. Import `betaearth.generate` for the Python API that backs the CLI; a minimal scripted example is in [`examples/predict.py`](examples/predict.py).
+
+### 4. Streamlit app (local)
+
+The same app as the hosted Space, run on your own compute:
+
+```bash
+git clone https://github.com/asterisk-labs/beta-earth
+cd beta-earth
+pip install 'betaearth[demo]'
+streamlit run demo/app.py
+```
+
+Then open http://localhost:8501 in your browser. Raise the 3 GB cap via env var:
+
+```bash
+BETAEARTH_MAX_OUTPUT_MB=50000 streamlit run demo/app.py   # 50 GB ceiling
+```
 
 ## Models
 
@@ -141,8 +147,8 @@ All models use **FiLM temporal conditioning** (day-of-year modulation) except th
 ### Key findings
 
 - **Temporal conditioning as spectral compensation:** FiLM importance scales inversely with spectral access — RGB-only (22pp) > DINOv3 (18pp) > SegFormer scratch (14pp) > frozen SegFormer (5pp).
-- **Multi-temporal averaging** of 4+ observations improves emulation by up to +18pp over single timestamps.
-- Predicted embeddings retain **98% of downstream LULC classification accuracy** and are robust to **32x compression**.
+- **Multi-temporal averaging** of 4+ observations improves emulation by up to +13pp over single timestamps, with the benefit biome-dependent (gap-fill wins in boreal regions; S2-only wins in arid/temperate).
+- Predicted embeddings retain **97% of downstream LULC classification accuracy** and are robust to **32x compression**.
 
 ---
 
@@ -234,8 +240,8 @@ All input data should be stored as raw values. Normalisation happens inside the 
 ## Reproduce
 
 ```bash
-git clone https://github.com/asterisk-labs/betaearth
-cd betaearth
+git clone https://github.com/asterisk-labs/beta-earth
+cd beta-earth
 conda env create -f environment.yml
 conda activate betaearth
 
