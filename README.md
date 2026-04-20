@@ -14,9 +14,12 @@
 
 ## What is BetaEarth?
 <img width="2978" height="750" alt="2023_preview_pca" src="https://github.com/user-attachments/assets/de8baf2d-f24e-4dd7-8db4-1d5fa562d7d8" />
+
+### Open-Source Embedding Product Emulator
+
 BetaEarth is an open-source model that produces **dense 10m geospatial embedding fields** from Sentinel-2 and Sentinel-1 imagery. It is trained to reproduce the outputs of [AlphaEarth Foundations](https://developers.google.com/earth-engine/datasets/catalog/GOOGLE_SATELLITE_EMBEDDING_V1_ANNUAL) (AEF) — a closed-source embedding model released by Google and Google DeepMind — using only AEF's publicly available precomputed embeddings as supervision.
 
-BetaEarth has **no access to AEF's weights or architecture**. It is an independent model, not a variant or extension of AEF.
+BetaEarth has **no access to AEF's weights or architecture**. It is an independent model, not a variant or extension of AEF. Its performance can often be **inferior to AlphaEarth** but it can be computed at a lower cost and with transparent access to the full data workflow, including the model.
 
 ### Why does this matter?
 
@@ -235,9 +238,8 @@ See `CHECKLIST.md` for a full step-by-step guide to reproducing each experiment 
 
 ```bibtex
 @inproceedings{czerkawski2026betaearth,
-  title     = {BetaEarth: Emulating Closed-Source Earth Observation Foundation Models Through Their Public Embeddings},
+  title     = {BetaEarth: Emulating Closed-Source Earth Observation Models Through Their Public Embeddings},
   author    = {Czerkawski, Mikolaj},
-  booktitle = {ISPRS Congress 2026},
   year      = {2026}
 }
 ```
