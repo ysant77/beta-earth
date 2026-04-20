@@ -660,8 +660,18 @@ if "results" in st.session_state and st.session_state.results:
 
 folium.LayerControl().add_to(m)
 
-# Render map (full width)
-map_data = st_folium(m, height=850, use_container_width=True, returned_objects=["all_drawings"])
+# Status slot ABOVE the map so progress + completion banner are always visible
+# without scrolling, even if the map occupies the full viewport height.
+status_placeholder = st.empty()
+if "results" in st.session_state and st.session_state.results:
+    with status_placeholder.container():
+        st.success(
+            "✓ Embeddings generated — scroll below the map for PCA previews and the ZIP download."
+        )
+
+# Render map (full width). Height kept modest so progress + results don't
+# get hidden below the fold on typical laptop screens.
+map_data = st_folium(m, height=650, use_container_width=True, returned_objects=["all_drawings"])
 
 # Extract bbox from drawn rectangle
 if map_data and map_data.get("all_drawings"):
@@ -690,7 +700,27 @@ if generate_btn and "bbox" in st.session_state and st.session_state.bbox:
         save_per_timestamp_input=save_per_timestamp_input,
     )
     if total_mb > MAX_OUTPUT_MB:
-        st.error(f"Estimated output ({total_mb:.0f} MB) exceeds {MAX_OUTPUT_MB} MB limit. Select a smaller region or fewer years.")
+        @st.dialog("Area too large for the public demo")
+        def _too_large_dialog():
+            st.markdown(
+                f"The estimated output is **{total_mb:.0f} MB**, which exceeds "
+                f"the **{MAX_OUTPUT_MB} MB** cap set for this free public demo."
+            )
+            st.markdown(
+                "This demo runs on a free HuggingFace Space with limited CPU and "
+                "memory, so we keep the ceiling low to keep it usable for everyone."
+            )
+            st.markdown("**Options to keep going:**")
+            st.markdown(
+                "- Pick a **smaller region** on the map, or reduce the number of years / toggle off per-timestamp saves.\n"
+                "- Generate **independently on your own machine** — the full pipeline "
+                "ships in our GitHub repo ([asterisk-labs/beta-earth](https://github.com/asterisk-labs/beta-earth)), "
+                "including a `betaearth-generate` CLI and a local version of this app "
+                "with a configurable output cap (`BETAEARTH_MAX_OUTPUT_MB`)."
+            )
+            if st.button("OK", use_container_width=True):
+                st.rerun()
+        _too_large_dialog()
     else:
         # Log request metadata up-front so failed generations are also captured
         log_request(
@@ -703,7 +733,9 @@ if generate_btn and "bbox" in st.session_state and st.session_state.bbox:
             save_per_timestamp_input=save_per_timestamp_input,
         )
 
-        progress = st.progress(0, text="Loading model...")
+        # Progress bar rendered into the slot ABOVE the map so it's always
+        # visible without scrolling.
+        progress = status_placeholder.progress(0, text="Loading model...")
 
         # Lazy imports
         from betaearth import BetaEarth
