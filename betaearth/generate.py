@@ -11,13 +11,13 @@ Requirements:
 
 Usage:
     # By bounding box
-    python examples/generate.py --bbox 13.18 48.86 13.65 49.13 --years 2023
+    betaearth-generate --bbox 13.18 48.86 13.65 49.13 --years 2023
 
     # By OSM relation (e.g. Bavarian Forest National Park)
-    python examples/generate.py --osm_relation 1864214 --years 2023
+    betaearth-generate --osm_relation 1864214 --years 2023
 
     # Keep raw scenes + use any scene with >= 80% coverage
-    python examples/generate.py --bbox 13.18 48.86 13.65 49.13 \
+    betaearth-generate --bbox 13.18 48.86 13.65 49.13 \
         --years 2023 --min_coverage 80 --save_scenes
 
 Output:
@@ -363,6 +363,7 @@ def generate(
     min_coverage: float = 100.0,
     overlap: int = 112,
     save_scenes: bool = False,
+    save_per_timestamp_embedding: bool = True,
 ):
     """Full pipeline: search -> download -> predict -> write."""
 
@@ -435,14 +436,23 @@ def generate(
 
         # Save per-timestamp
         ts_dir = files_dir / f"{dt.date()}_s2"
-        ts_dir.mkdir(parents=True, exist_ok=True)
-        write_geotiff(emb.astype(np.float32), grid, ts_dir / "embedding.tif")
+        if save_per_timestamp_embedding or save_scenes:
+            ts_dir.mkdir(parents=True, exist_ok=True)
+        if save_per_timestamp_embedding:
+            write_geotiff(emb.astype(np.float32), grid, ts_dir / "embedding.tif")
         if save_scenes:
             write_geotiff(s2_data, grid, ts_dir / "scene.tif", band_first=True)
 
         used_scenes.append({
-            "sensor": "S2", "date": str(dt.date()), "doy": doy,
-            "mgrs": mgrs, "cloud_cover": float(cc) if isinstance(cc, (int, float)) else None,
+            "sensor": "S2",
+            "stac_collection": "sentinel-2-l2a",
+            "stac_id": item.id,
+            "date": str(dt.date()),
+            "datetime": dt.isoformat(),
+            "doy": doy,
+            "mgrs": mgrs,
+            "platform": item.properties.get("platform"),
+            "cloud_cover": float(cc) if isinstance(cc, (int, float)) else None,
             "coverage": round(cov, 1),
         })
 
@@ -470,13 +480,24 @@ def generate(
         log.info("  Predicted (%s)", _elapsed(t0))
 
         ts_dir = files_dir / f"{dt.date()}_s1"
-        ts_dir.mkdir(parents=True, exist_ok=True)
-        write_geotiff(emb.astype(np.float32), grid, ts_dir / "embedding.tif")
+        if save_per_timestamp_embedding or save_scenes:
+            ts_dir.mkdir(parents=True, exist_ok=True)
+        if save_per_timestamp_embedding:
+            write_geotiff(emb.astype(np.float32), grid, ts_dir / "embedding.tif")
         if save_scenes:
             write_geotiff(s1_data, grid, ts_dir / "scene.tif", band_first=True)
 
         used_scenes.append({
-            "sensor": "S1", "date": str(dt.date()), "doy": doy,
+            "sensor": "S1",
+            "stac_collection": "sentinel-1-rtc",
+            "stac_id": item.id,
+            "date": str(dt.date()),
+            "datetime": dt.isoformat(),
+            "doy": doy,
+            "platform": item.properties.get("platform"),
+            "orbit_state": item.properties.get("sat:orbit_state"),
+            "polarizations": item.properties.get("sar:polarizations"),
+            "instrument_mode": item.properties.get("sar:instrument_mode"),
             "coverage": round(cov, 1),
         })
 
@@ -525,15 +546,41 @@ def generate(
             write_pca_preview(ts_emb, ts_dir / "preview_pca.png", pca_state=pca_state)
 
     # --- Manifest ---
+    # Try to extract model provenance (best-effort — attributes vary by variant)
+    model_info: dict = {}
+    for attr in ("repo_id", "_repo_id", "variant", "_variant", "model_type", "_model_type"):
+        val = getattr(model, attr, None)
+        if val is not None:
+            model_info[attr.lstrip("_")] = str(val)
+    try:
+        import betaearth as _be
+        model_info["betaearth_version"] = getattr(_be, "__version__", "unknown")
+    except Exception:
+        pass
+
+    from datetime import timezone as _tz
     manifest = {
+        "generated_at": datetime.now(_tz.utc).isoformat().replace("+00:00", "Z"),
+        "model": model_info,
         "bbox_4326": list(bbox_4326),
         "crs": f"EPSG:{grid['epsg']}",
         "bounds": list(grid["bounds"]),
         "shape": list(grid["shape"]),
         "resolution_m": RESOLUTION,
         "year": year,
-        "min_coverage": min_coverage,
-        "overlap": overlap,
+        "acquisition": {
+            "stac_endpoint": PC_CATALOG,
+            "collection_s2": "sentinel-2-l2a",
+            "collection_s1": "sentinel-1-rtc",
+            "max_cloud_cover_pct": max_cloud,
+            "max_per_quarter_s2": max_per_quarter,
+            "max_per_quarter_s1": 1,
+            "min_coverage_pct": min_coverage,
+        },
+        "inference": {
+            "tile_size": 224,
+            "overlap": overlap,
+        },
         "n_scenes_found": total_scenes,
         "n_scenes_used": len(used_scenes),
         "n_scenes_skipped": skipped,
@@ -556,14 +603,14 @@ def main():
         description="Generate BetaEarth embeddings for any area of interest",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Examples:
-  # Bavarian Forest National Park
-  python examples/generate.py --osm_relation 1864214 --years 2023
+  # Bavarian Forest National Park (annual mosaic only)
+  betaearth-generate --osm_relation 1864214 --years 2023 --no_per_timestamp_embedding
 
   # Custom bounding box (west south east north)
-  python examples/generate.py --bbox 13.18 48.86 13.65 49.13 --years 2022 2023
+  betaearth-generate --bbox 13.18 48.86 13.65 49.13 --years 2022 2023
 
-  # Keep raw input scenes
-  python examples/generate.py --bbox 13.18 48.86 13.65 49.13 --years 2023 --save_scenes
+  # Keep raw input scenes too
+  betaearth-generate --bbox 13.18 48.86 13.65 49.13 --years 2023 --save_scenes
 """,
     )
     # AOI
@@ -599,6 +646,8 @@ def main():
                         help="Subdirectory name (default: auto from AOI)")
     parser.add_argument("--save_scenes", action="store_true",
                         help="Save raw input scenes alongside embeddings")
+    parser.add_argument("--no_per_timestamp_embedding", action="store_true",
+                        help="Skip per-scene embedding GeoTIFFs (keep only annual average)")
     parser.add_argument("--verbose", action="store_true")
 
     args = parser.parse_args()
@@ -650,6 +699,7 @@ def main():
             min_coverage=args.min_coverage,
             overlap=args.overlap,
             save_scenes=args.save_scenes,
+            save_per_timestamp_embedding=not args.no_per_timestamp_embedding,
         )
 
     log.info("Done.")

@@ -5,7 +5,7 @@ on:
     branches: [main]
     paths:
       - 'demo/**'
-      - 'examples/generate.py'
+      - 'betaearth/generate.py'
 
 jobs:
   sync:
@@ -18,16 +18,15 @@ jobs:
           mkdir -p space/.streamlit
           cp demo/app.py space/app.py
           cp demo/.streamlit/config.toml space/.streamlit/config.toml
-          cp examples/generate.py space/generate.py
 
-          # Fix imports for standalone Space
-          sed -i "s|from examples.generate import|from generate import|g" space/app.py
+          # Strip the local-dev sys.path bootstrap — the Space installs
+          # betaearth from PyPI so there's nothing to prepend to sys.path.
           sed -i '/^import sys$/d' space/app.py
           sed -i '/sys.path.insert/d' space/app.py
 
           # requirements.txt
           cat > space/requirements.txt << 'EOF'
-          betaearth[generate]>=0.2.1
+          betaearth[generate]>=0.2.2
           streamlit-folium>=0.18
           folium>=0.15
           pandas>=1.3

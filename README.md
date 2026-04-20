@@ -54,6 +54,32 @@ The hosted Space caps total output at 3 GB to keep CPU-only runs tractable. For 
 BETAEARTH_MAX_OUTPUT_MB=50000 streamlit run demo/app.py   # 50 GB ceiling
 ```
 
+### Generate a custom dataset (CLI)
+
+For larger / scripted runs, use the `betaearth-generate` CLI that ships with the package. It drives the same pipeline as the Streamlit demo — download Sentinel-2 L2A + Sentinel-1 RTC + COP-DEM from Planetary Computer, run tiled inference, write an annual 64-band GeoTIFF plus a full provenance manifest per year.
+
+```bash
+pip install 'betaearth[generate]'
+
+# By bounding box (W S E N), one or more years
+betaearth-generate --bbox 13.1 48.7 13.8 49.2 --years 2020 2021 2022 2023 2024 2025 \
+    --output_dir outputs/bavarian_forest
+
+# By OSM relation id (resolved to its bbox)
+betaearth-generate --osm_relation 1864214 --years 2024 --output_dir outputs/bav
+```
+
+Each run produces, per year:
+
+| File | Description |
+|---|---|
+| `{year}.tif` | 64-band annual average embedding (L2-normalised per pixel), COG |
+| `{year}_preview_pca.png` | 3-band PCA-RGB quick-look of the annual mosaic |
+| `{year}_manifest.json` | Provenance: model repo + version, CRS/bounds/shape, acquisition params, full STAC id list of every scene used (cloud cover, coverage, S1 orbit/polarisation, ...) |
+| `{year}_files/{date}_{sensor}/` | Optional per-scene outputs, only with `--save_per_timestamp_embedding` / `--save_scenes` |
+
+The manifest is deliberately verbose so any user of the embedding can verify exactly which Sentinel products fed into it. See `betaearth.generate` for the Python API.
+
 ## Models
 
 We release **8 model variants** spanning different trade-offs between quality, parameter efficiency, and input requirements.

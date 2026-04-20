@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "betaearth"
-version = "0.2.1"
+version = "0.2.2"
 description = "BetaEarth: AlphaEarth Embedding Emulator"
 readme = "README.md"
 license = {text = "CC-BY-4.0"}
@@ -49,6 +49,9 @@ demo = [
 Homepage = "https://github.com/asterisk-labs/beta-earth"
 Models = "https://huggingface.co/asterisk-labs"
 "Asterisk Labs" = "https://asterisk.coop"
+
+[project.scripts]
+betaearth-generate = "betaearth.generate:main"
 
 [tool.setuptools.packages.find]
 include = ["betaearth*"]

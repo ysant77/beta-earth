@@ -708,7 +708,7 @@ if generate_btn and "bbox" in st.session_state and st.session_state.bbox:
         # Lazy imports
         from betaearth import BetaEarth
         import torch
-        from examples.generate import (
+        from betaearth.generate import (
             compute_grid, download_dem, download_s2, download_s1,
             _search_stac, _seasonal_select, check_coverage,
             write_geotiff, fit_pca, write_pca_preview,
