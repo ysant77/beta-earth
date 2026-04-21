@@ -559,7 +559,12 @@ with st.sidebar:
     )
     st.divider()
 
-    time_mode = st.radio("Time range", ["Annual", "Custom dates"], horizontal=True)
+    # Default to a narrow custom window so the first-run experience on the
+    # free CPU Space stays fast (~6 scenes max vs ~28 for a full annual mean).
+    time_mode = st.radio(
+        "Time range", ["Custom dates", "Annual"], horizontal=True,
+        help="Custom = quick ~1-month test. Annual = full-year mosaic (slower on CPU).",
+    )
 
     if time_mode == "Annual":
         year_range = st.slider("Years", 2017, 2025, (2023, 2023))
@@ -569,9 +574,9 @@ with st.sidebar:
         from datetime import date
         col_d1, col_d2 = st.columns(2)
         with col_d1:
-            start_date = st.date_input("Start", date(2023, 6, 1), min_value=date(2017, 1, 1))
+            start_date = st.date_input("Start", date(2023, 7, 1), min_value=date(2017, 1, 1))
         with col_d2:
-            end_date = st.date_input("End", date(2023, 8, 31), max_value=date(2025, 12, 31))
+            end_date = st.date_input("End", date(2023, 7, 31), max_value=date(2025, 12, 31))
         years = sorted(set(range(start_date.year, end_date.year + 1)))
         custom_dates = (str(start_date), str(end_date))
 
