@@ -433,6 +433,65 @@ class DINOv3Encoder(nn.Module):
 
 
 # =============================================================================
+# RGB-only SegFormer (minimal variant, 3-channel S2 RGB + DOY)
+# =============================================================================
+
+class RGBOnlySegFormerEncoder(nn.Module):
+    """SegFormer-B2 trained on S2 RGB (B04, B03, B02) + DOY only.
+
+    This mirrors the `RGBOnlySegFormer` training-time class. Matches the
+    `asterisk-labs/betaearth-rgb-only` HF repo (`architecture.in_channels.s2_l1c = 3`).
+    Accepts either:
+      - a 3-channel tensor already in B04, B03, B02 order (user did the slicing), or
+      - a 9-channel BetaEarth S2 tensor — extracts channels 2, 1, 0 internally.
+    """
+
+    def __init__(self, embed_dim: int = 64, encoder_name: str = "mit_b2",
+                 fusion_dim: int = 256, time_embed_dim: int = 128):
+        super().__init__()
+        import segmentation_models_pytorch as smp
+        self.encoder = smp.FPN(
+            encoder_name=encoder_name, in_channels=3, classes=fusion_dim,
+            encoder_weights=None,   # weights come from the released checkpoint
+        )
+        self.time_cond = TimestampConditioner(time_embed_dim, fusion_dim)
+        self.head = nn.Sequential(
+            nn.Conv2d(fusion_dim, fusion_dim, 1),
+            nn.GELU(),
+            nn.Conv2d(fusion_dim, embed_dim, 1),
+        )
+
+    def forward(self, batch: dict, modalities: list[str] | None = None) -> Tensor:
+        s2 = batch.get("s2_l1c")
+        if s2 is None:
+            s2 = batch.get("s2_l2a")
+        if s2 is None:
+            raise ValueError("RGB-only model requires 's2_l1c' or 's2_l2a' input.")
+
+        if s2.shape[1] == 9:
+            rgb = s2[:, [2, 1, 0]]   # extract B04, B03, B02
+        elif s2.shape[1] == 3:
+            rgb = s2                 # already RGB-ordered
+        else:
+            raise ValueError(
+                f"RGB-only model expects 3 or 9 input channels, got {s2.shape[1]}."
+            )
+
+        feat = self.encoder(rgb)
+        doy = batch.get("timestamp")
+        if doy is not None:
+            feat = self.time_cond(feat, doy)
+
+        target_size = (s2.shape[-2], s2.shape[-1])
+        if feat.shape[-2:] != target_size:
+            feat = F.interpolate(feat, size=target_size, mode="bilinear",
+                                 align_corners=False)
+
+        out = self.head(feat)
+        return out.permute(0, 2, 3, 1)  # (B, H, W, 64)
+
+
+# =============================================================================
 # Tiled inference
 # =============================================================================
 
@@ -447,7 +506,7 @@ def _make_blend_window(tile_size: int, overlap: int) -> np.ndarray:
 
 
 def tiled_inference(model: nn.Module, batch: dict, tile_size: int = 224,
-                    overlap: int = 32, modalities: list[str] | None = None) -> Tensor:
+                    overlap: int = 112, modalities: list[str] | None = None) -> Tensor:
     """Run model on overlapping tiles with trapezoidal blending.
 
     Args:
@@ -581,39 +640,58 @@ class BetaEarth:
             except Exception:
                 config_path = None
 
-        # Detect model type from config or repo name
+        # Detect model type from config or repo name. Three families:
+        #   1. DINOv3        (shared frozen ViT, 3-band primitives)
+        #   2. RGB-only      (single 3-channel S2-RGB SegFormer + FiLM)
+        #   3. SegFormer-B2  (default; per-modality 9/9/2/1-channel encoders)
         is_dinov3 = False
+        is_rgb_only = False
         variant = "vitl16"
+        repo_name = Path(repo_id_or_path).name
         if config_path:
             import json
             with open(config_path) as f:
                 config = json.load(f)
             arch = config.get("architecture", "")
+            model_name = config.get("model_name", "")
             is_dinov3 = config.get("model_type", "").startswith("betaearth-dinov3") or (
                 isinstance(arch, str) and "dinov3" in arch
             )
+            # RGB-only signature: config declares 3-channel s2_l1c, or model_name says so.
+            if isinstance(arch, dict):
+                in_ch = arch.get("in_channels", {})
+                is_rgb_only = (isinstance(in_ch, dict) and in_ch.get("s2_l1c") == 3) \
+                              or "rgb-only" in model_name or "rgb_only" in model_name
+            else:
+                is_rgb_only = "rgb-only" in model_name or "rgb_only" in model_name
             variant = arch.get("variant", "vitl16") if isinstance(arch, dict) else "vitl16"
         else:
-            repo_name = Path(repo_id_or_path).name
             if any(d in repo_name for d in cls._DINOV3_REPOS):
                 is_dinov3 = True
                 variant = "vits16" if "vits16" in repo_name else "vitl16"
+            elif "rgb-only" in repo_name or "rgb_only" in repo_name:
+                is_rgb_only = True
+
+        state_dict = torch.load(weights_path, map_location="cpu", weights_only=True)
 
         if is_dinov3:
             encoder = DINOv3Encoder(
                 variant=variant, head_dim=128,
                 fusion_dim=256, embed_dim=64, time_embed_dim=128,
             )
-            state_dict = torch.load(weights_path, map_location="cpu", weights_only=True)
             encoder.load_state_dict(state_dict, strict=False)
-            # Load frozen backbone
             encoder.load_backbone(dinov3_weights)
+        elif is_rgb_only:
+            encoder = RGBOnlySegFormerEncoder(
+                embed_dim=64, encoder_name="mit_b2",
+                fusion_dim=256, time_embed_dim=128,
+            )
+            encoder.load_state_dict(state_dict, strict=True)
         else:
             encoder = SegFormerEncoder(
                 embed_dim=64, encoder_name="mit_b2",
                 fusion_dim=256, time_embed_dim=128,
             )
-            state_dict = torch.load(weights_path, map_location="cpu", weights_only=True)
             encoder.load_state_dict(state_dict, strict=False)
 
         return cls(encoder, device=device)
@@ -627,7 +705,7 @@ class BetaEarth:
         dem: np.ndarray | None = None,
         doy: int = 182,
         tile_size: int = 224,
-        overlap: int = 32,
+        overlap: int = 112,
         normalise: bool = True,
         l2_norm: bool = True,
     ) -> np.ndarray:
@@ -644,7 +722,10 @@ class BetaEarth:
             dem: (1, H, W) COP-DEM, float32 elevation in meters.
             doy: Day of year (1-366) for temporal conditioning.
             tile_size: Inference tile size (default 224).
-            overlap: Tile overlap in pixels (default 32).
+            overlap: Tile overlap in pixels (default 112). Larger overlap = smoother
+                PCA-RGB previews at the cost of ~3x inference time. 112 matches the
+                paper's eval pipeline; 32 is faster but can show visible seams on
+                low-variance scenes (arid, water, snow).
             normalise: Apply built-in normalisation (default True).
                 Set False if inputs are already normalised to [0, 1].
             l2_norm: L2-normalise output per pixel (default True).
@@ -680,7 +761,22 @@ class BetaEarth:
 
         batch["timestamp"] = torch.tensor([doy], dtype=torch.long, device=self.device)
 
-        with torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=self.device.type == "cuda"):
+        # Pick autocast dtype based on hardware capability:
+        #   - Ampere / Hopper / Ada (cc >= 8.0, A100/L4/H100):
+        #       bf16 autocast is native and numerically stable.
+        #   - Turing / Volta (cc < 8.0, T4/V100):
+        #       bf16 has no cuDNN engine (RuntimeError "GET was unable to find an engine"),
+        #       and fp16 autocast produces NaN outputs from activation overflow in the
+        #       encoder. Safest choice: disable autocast and run fp32. Slower but correct.
+        amp_enabled = False
+        amp_dtype = torch.float32
+        if self.device.type == "cuda":
+            cc_major, _ = torch.cuda.get_device_capability(self.device)
+            if cc_major >= 8:
+                amp_enabled = True
+                amp_dtype = torch.bfloat16
+
+        with torch.amp.autocast("cuda", dtype=amp_dtype, enabled=amp_enabled):
             pred = tiled_inference(self.encoder, batch, tile_size=tile_size,
                                    overlap=overlap, modalities=modalities)
 

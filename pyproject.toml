@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "betaearth"
-version = "0.2.3"
+version = "0.2.5"
 description = "BetaEarth: AlphaEarth Embedding Emulator"
 readme = "README.md"
 license = {text = "CC-BY-4.0"}

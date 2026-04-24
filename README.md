@@ -1,33 +1,92 @@
 <img width="1897" height="800" alt="beta-final" src="https://github.com/user-attachments/assets/91b2a46c-a142-4eed-99ce-a1b692178146" />
 
 
-[![arXiv](https://img.shields.io/badge/arXiv-XXXX.XXXXX-b31b1b.svg)](https://arxiv.org/abs/XXXX.XXXXX)
+[![Preprint PDF](https://img.shields.io/badge/Preprint-PDF-b31b1b.svg)](docs/beta_earth_preprint.pdf)
 [![License: CC BY 4.0](https://img.shields.io/badge/License-CC_BY_4.0-lightgrey.svg)](https://creativecommons.org/licenses/by/4.0/)
 [![Dataset](https://img.shields.io/badge/🤗-Major_TOM-yellow)](https://huggingface.co/Major-TOM)
+[![Browser Demo](https://img.shields.io/badge/🤗-Browser_Demo-ff9d00)](https://huggingface.co/spaces/asterisk-labs/betaearth)
 [![ISPRS 2026](https://img.shields.io/badge/ISPRS-2026-blue)](https://www.isprs.org)
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/asterisk-labs/beta-earth/blob/main/examples/demo.ipynb)
 [![PyPI](https://img.shields.io/pypi/v/betaearth)](https://pypi.org/project/betaearth/)
 
 **Embedding Sentinel-2 and Sentinel-1 with a Little Help of AlphaEarth**
 
+> 📄 **Official paper coming soon.** The write-up (architecture, evaluation on 6,250 test tiles, modality attribution, multi-temporal aggregation) will be published on **EarthArXiv** shortly. Working draft available as a local PDF: [`docs/beta_earth_preprint.pdf`](docs/beta_earth_preprint.pdf).
+
 ---
 
 ## What is BetaEarth?
 <img width="2978" height="1000" alt="2023_preview_pca" src="https://github.com/user-attachments/assets/de8baf2d-f24e-4dd7-8db4-1d5fa562d7d8" />
 
-### Open-Source Embedding Product Emulator
+BetaEarth produces dense 10 m geospatial embedding fields from Sentinel-2 and Sentinel-1 imagery. It is trained to approximate the outputs of [AlphaEarth Foundations](https://developers.google.com/earth-engine/datasets/catalog/GOOGLE_SATELLITE_EMBEDDING_V1_ANNUAL) (AEF) — the embedding product released by Google and Google DeepMind — using only AEF's public precomputed embeddings as supervision.
 
-BetaEarth is an open-source model that produces **dense 10m geospatial embedding fields** from Sentinel-2 and Sentinel-1 imagery. It is trained to reproduce the outputs of [AlphaEarth Foundations](https://developers.google.com/earth-engine/datasets/catalog/GOOGLE_SATELLITE_EMBEDDING_V1_ANNUAL) (AEF) — a closed-source embedding model released by Google and Google DeepMind — using only AEF's publicly available precomputed embeddings as supervision.
-
-BetaEarth has **no access to AEF's weights or architecture**. It is an independent model, not a variant or extension of AEF. Its performance can often be **inferior to AlphaEarth** but it can be computed at a lower cost and with transparent access to the full data workflow, including the model.
+BetaEarth has no access to AEF's weights or architecture. It is an independent model, not a variant or extension of AEF. Emulation quality is below AEF's, but BetaEarth runs locally on any Sentinel scene and its full pipeline is open.
 
 <img width="1200" height="630" alt="beta-earth" src="https://github.com/user-attachments/assets/848e21a3-7af9-4614-898a-8a11a2015eff" />
 
-### Why does this matter?
+### When to use BetaEarth
 
-- **Reproducibility:** AEF embeddings cannot be generated for new data without Google Earth Engine access. BetaEarth can run locally on any Sentinel-2/S1 imagery.
-- **Auditability:** BetaEarth enables the community to probe a closed-source model's behaviour — identifying biases, modality sensitivities, and failure modes — without direct model access.
-- **Security research:** This work demonstrates that releasing embeddings may not be a risk-free alternative to releasing model weights.
+- **Offline generation.** AEF is distributed as annual global rasters generated inside Google Earth Engine. BetaEarth runs on any S2/S1 scene locally — useful for custom temporal windows or deployments without Earth Engine access.
+- **Open pipeline.** Training data, weights, and inference code are all open, so BetaEarth can serve as an approximate reference for studying how multimodal Earth-observation embeddings behave under missing modalities, temporal averaging, or compression.
+
+---
+
+## Quickstart
+
+```bash
+pip install betaearth
+```
+
+```python
+from betaearth import BetaEarth
+
+model = BetaEarth.from_pretrained()  # default: robust curriculum variant
+
+# Any modality can be omitted — the curriculum model handles missing inputs.
+# predict() tiles internally (224 px tile, 112 px overlap, trapezoidal blend),
+# so any (H, W) works — including full 1068x1068 Major TOM tiles or larger.
+embedding = model.predict(
+    s2_l2a=s2_l2a,   # (9, H, W) uint16 DN; bands [B02,B03,B04,B08,B05,B06,B07,B11,B12]
+    s2_l1c=s2_l1c,   # (9, H, W) uint16 DN; same band order as L2A
+    s1=s1,           # (2, H, W) float32 linear power (NOT dB); bands [VV, VH]
+    dem=dem,         # (1, H, W) float32 elevation in metres (raw COP-DEM)
+    doy=182,         # day-of-year of the S2 acquisition (1-366)
+)
+# embedding: (H, W, 64) float32, L2-normalised per pixel (unit vectors on S^63)
+```
+
+### Input formats
+
+All spatial arrays share the same `(H, W)` and are pixel-aligned. BetaEarth normalises internally — **pass the raw source values** described below, no custom scaling.
+
+| Input | Shape | Dtype | Units / range | Band order | Typical source |
+|---|---|---|---|---|---|
+| `s2_l1c` | `(9, H, W)` | uint16 | Digital numbers, 0–10 000+ (top-of-atmosphere reflectance × 10 000). Divided by 10 000 internally. | `[B02, B03, B04, B08, B05, B06, B07, B11, B12]` | Copernicus Data Space Ecosystem, Sentinel Hub, AWS Open Data |
+| `s2_l2a` | `(9, H, W)` | uint16 | Digital numbers, 0–10 000+ (atmospherically-corrected surface reflectance × 10 000). Divided by 10 000 internally. | same as L1C | Planetary Computer, Sentinel Hub, AWS Earth Search |
+| `s1` | `(2, H, W)` | float32 | **Linear power** (typical range ~0–200, not 0–1). Converted to dB and rescaled internally. | `[VV, VH]` | Planetary Computer `sentinel-1-rtc`, ASF Radiometric Terrain Corrected |
+| `dem` | `(1, H, W)` | float32 | Raw elevation in metres (COP-DEM GLO-30 range ~−500 to 9000). Min-max rescaled internally. | – | Copernicus DEM GLO-30 (Planetary Computer `cop-dem-glo-30`) |
+| `doy` | scalar int | 1–366 | Day-of-year of the S2 acquisition (not epoch, not ISO) | – | – |
+
+Output is `(H, W, 64) float32`, L2-normalised per pixel. `H` and `W` can be anything ≥ 224; `predict()` tiles the input with a 224×224 window internally and stitches.
+
+### Input gotchas
+
+- **S2 band order matters.** The 10 m bands come first, then 20 m: `[B02, B03, B04, B08, B05, B06, B07, B11, B12]`. Any other order silently produces garbage embeddings. If you fetch from a STAC source that returns bands in their native order (`B01, B02, …`), you must reorder before passing in.
+- **L1C and L2A are NOT interchangeable.** They are handled by separate encoders and represent distinct processing levels (top-of-atmosphere vs surface reflectance). The default **curriculum (flagship)** model handles any subset (single L1C, single L2A, both, or neither) gracefully. The **peak-quality** variants (`segformer-film-reinit`, `segformer-film-hilr`, etc.) were trained with **L1C + L2A jointly** and drop ~32 % cos sim if only one processing level is provided.
+- **Raw DN values, not reflectance.** S2 normalisation happens inside the model — pass the uint16 DN as-is.
+- **S1 must be linear power, not dB.** Planetary Computer's `sentinel-1-rtc` collection returns linear power by default. If you have GRD-dB data (e.g. from SNAP), convert first: `linear = 10 ** (db / 10)`. Typical linear-power magnitudes are ~0.01–200; `predict()` handles the dB conversion and clipping internally.
+- **DEM in metres, not pre-normalised.** Pass the raw elevation array (COP-DEM GLO-30 output). `predict()` applies per-input min-max rescaling internally. If you already have DEM rescaled to `[0, 1]`, pass `normalise=False` to `predict()`.
+- **Shape convention.** All spatial inputs are channel-first `(C, H, W)` — consistent with torch conventions but opposite of common remote-sensing `(H, W, C)` rasters.
+- **Tiling is automatic.** `predict()` uses a 224 px tile with 112 px overlap (trapezoidal blending) by default — matches the paper's eval pipeline and gives seam-free PCA-RGB previews on low-variance scenes (arid, water, snow). Override with `tile_size=...` / `overlap=...` if you want a different stitch; `overlap=32` is ~3× faster but can show visible seams on uniform surfaces. Anything below 224 px total will fail.
+
+**Try in 30 seconds on Colab** — pick the notebook that matches your use case:
+
+| Notebook | When to use | Inputs | Runtime |
+|---|---|---|---|
+| ⚡ [`demo.ipynb`](examples/demo.ipynb) [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/asterisk-labs/beta-earth/blob/main/examples/demo.ipynb) | **Fast mono-temporal quickstart.** Understand the model in one minute. | 1 Major TOM tile (single parquet row, no STAC) | ~30 s on T4 |
+| 🌍 [`generate_demo.ipynb`](examples/generate_demo.ipynb) [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/asterisk-labs/beta-earth/blob/main/examples/generate_demo.ipynb) | **Flexible multi-temporal** — any bounding box, annual aggregated embedding. Same pipeline as the hosted app. | S2 + S1 + DEM from Planetary Computer (multi-scene) | few minutes on T4 |
+
+Or skip the notebooks: [`examples/predict.py`](examples/predict.py) is the minimal local script.
 
 ---
 
@@ -36,15 +95,24 @@ BetaEarth has **no access to AEF's weights or architecture**. It is an independe
 
 Four entry points, from zero-install to fully scripted.
 
-### 1. Hosted demo (no install)
+### 1. Hosted app (no install)
 
-Pick a bounding box on a map, click run: [huggingface.co/spaces/asterisk-labs/betaearth](https://huggingface.co/spaces/asterisk-labs/betaearth). Free tier is CPU-only and caps total output at 3 GB.
+Pick a bounding box on a map, click run. Free tier is CPU-only and caps total output at 3 GB.
+
+<p align="center">
+  <a href="https://huggingface.co/spaces/asterisk-labs/betaearth">
+    <img src="https://huggingface.co/datasets/huggingface/badges/resolve/main/open-in-hf-spaces-xl-dark.svg" alt="Open in HF Spaces" height="56"/>
+  </a>
+</p>
 
 <img width="2399" height="1240" alt="BetaEarth App" src="https://github.com/user-attachments/assets/167f6a0f-3216-4e43-96aa-bdf1490a68b4" />
 
-### 2. Colab notebook (recommended for first try) <a href="https://colab.research.google.com/github/asterisk-labs/beta-earth/blob/main/examples/generate_demo.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" align="center"/></a>
+### 2. Colab notebooks
 
-[`examples/generate_demo.ipynb`](examples/generate_demo.ipynb) walks through the full pipeline in a notebook: `pip install betaearth[generate]`, pick an AOI on an interactive map, run one cell, visualise annual + per-timestamp PCA-RGB previews side-by-side. Uses Colab's free T4 GPU.
+Two notebooks depending on how much acquisition plumbing you want:
+
+- ⚡ [`examples/demo.ipynb`](examples/demo.ipynb) [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/asterisk-labs/beta-earth/blob/main/examples/demo.ipynb) — **fast mono-temporal**. One Major TOM tile, one `predict()`, one PCA-RGB. No STAC, no credentials. Good for understanding the model.
+- 🌍 [`examples/generate_demo.ipynb`](examples/generate_demo.ipynb) [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/asterisk-labs/beta-earth/blob/main/examples/generate_demo.ipynb) — **flexible multi-temporal**. Pick any bbox on an interactive map; the notebook downloads Sentinel-2 L2A + Sentinel-1 RTC + COP-DEM from Planetary Computer, runs per-timestamp inference, averages into an annual 64-band GeoTIFF. Uses Colab's free T4 GPU. This is the same pipeline as the hosted Streamlit app.
 
 ### 3. Command-line generation (the main path for real work)
 
@@ -93,40 +161,51 @@ BETAEARTH_MAX_OUTPUT_MB=50000 streamlit run demo/app.py   # 50 GB ceiling
 
 We release **8 model variants** spanning different trade-offs between quality, parameter efficiency, and input requirements.
 
-### Main results (6,200-tile test set)
+### Main results (full 6,250-tile test set)
+
+> **Preliminary results from the first preprint version.** Numbers match the working draft ([`docs/beta_earth_preprint.pdf`](docs/beta_earth_preprint.pdf), Table II) — full test set; own-probe LULC. Subject to revision once the paper goes live on EarthArXiv and in subsequent versions as evaluation is expanded.
 
 | Model | Test Cos Sim | Std | LULC Acc | Model Size | Inputs |
 |---|:---:|:---:|:---:|---:|---|
-| **SF curriculum (robust)** | **0.873** | 0.109 | **0.833** | 104.8M | **Any subset** of S2/S1/DEM + DOY |
-| SF frozen+FiLM (reinit) | 0.886 | 0.098 | 0.873 | 104.8M | S2 L1C+L2A, S1, DEM, DOY |
-| SF frozen+FiLM (hilr) | 0.886 | 0.099 | 0.866 | 104.8M | S2 L1C+L2A, S1, DEM, DOY |
-| SF from scratch+FiLM | 0.883 | --- | 0.835 | 104.8M | S2 L1C+L2A, S1, DEM, DOY |
-| SF no FiLM (ISPRS) | 0.880 | 0.101 | 0.869 | 104.8M | S2 L1C+L2A, S1, DEM |
-| DINOv3 ViT-L/16 (sat) | 0.874 | 0.100 | 0.870 | 304M | 6 primitives + DOY |
-| DINOv3 ViT-S/16 (nat) | 0.861 | 0.109 | 0.863 | 23.8M | 6 primitives + DOY |
-| SF RGB-only+FiLM | 0.836 | --- | 0.823 | 26.3M | S2 RGB, DOY |
-| *Real AlphaEarth (ceiling)* | *---* | *---* | *0.889* | --- | --- |
+| **SF curriculum (flagship)** | **0.873** | 0.109 | 0.833 | 104.8M | **Any subset** of S2/S1/DEM + DOY |
+| SF frozen+FiLM (reinit) | **0.883** | 0.106 | 0.836 | 104.8M | S2 L1C+L2A, S1, DEM, DOY |
+| SF frozen+FiLM (hilr) | 0.883 | 0.107 | 0.838 | 104.8M | S2 L1C+L2A, S1, DEM, DOY |
+| SF from-scratch+FiLM | 0.883 | 0.105 | 0.835 | 104.8M | S2 L1C+L2A, S1, DEM, DOY |
+| SF no FiLM (baseline) | 0.875 | 0.110 | 0.838 | 104.8M | S2 L1C+L2A, S1, DEM |
+| DINOv3 ViT-L/16 | 0.873 | 0.109 | **0.840** | 304M | 6 primitives + DOY |
+| DINOv3 ViT-S/16 | 0.862 | 0.112 | 0.836 | 24M | 6 primitives + DOY |
+| SF RGB-only+FiLM | 0.834 | 0.128 | 0.823 | 26.3M | S2 RGB, DOY |
+| *Real AlphaEarth (reference)* | *---* | *---* | *0.856* | --- | --- |
 
-The **curriculum (robust)** model handles any modality subset gracefully:
+### Single-modality performance (curriculum flagship, test set)
+
+> **Preliminary — working draft.** Values match the preprint Table III (curriculum on the full 6,250-tile test set). See [`docs/beta_earth_preprint.pdf`](docs/beta_earth_preprint.pdf).
+
+The **curriculum** model is the only variant that remains functional under severely reduced inputs:
 
 | Input subset | Cosine sim |
 |---|:---:|
-| All modalities | 0.873 |
-| L1C only | 0.806 |
-| L2A only | 0.755 |
-| S1 only | 0.712 |
-| DEM only | 0.609 |
+| All modalities | 0.872 |
+| No DEM (S2+S1 only) | 0.854 |
+| No S1 (S2+DEM only) | 0.848 |
+| S2 only | 0.817 |
+| No time (DOY=0) | 0.773 |
+| S1 only | 0.710 |
+| DEM only | 0.541 |
+
+For users with access to only one S2 processing level, separate validation-set measurements give **L1C-only 0.806** and **L2A-only 0.755** (the paper's test-set ablation groups both L1C and L2A together under "S2 only").
 
 ### Which model should I use?
 
 | Use case | Recommended model | Why |
 |---|---|---|
-| **General use (default)** | SF curriculum (robust) | Works with any input subset; best for real-world deployment |
-| **Maximum quality** | SF frozen+FiLM (reinit) | Highest cos sim (0.886) — requires all 4 modalities |
-| **No timestamp needed** | SF no FiLM (ISPRS) | Does not require day-of-year input; still achieves 0.880 |
-| **Lightweight / edge** | DINOv3 ViT-S/16 | 23.8M params, good quality (0.861) |
-| **Minimal data requirements** | SF RGB-only+FiLM | Only needs 3-band RGB + day-of-year |
-| **Research / ablation** | SF frozen+FiLM (hilr) | Alternative fusion strategy for comparison |
+| **General use (default)** | SF curriculum (flagship) | Works with any input subset; only variant that stays usable on single-modality inputs (S1-only 0.710, DEM-only 0.541) |
+| **Maximum quality** | SF frozen+FiLM (reinit) | Highest test cos sim (0.883) — requires all 4 modalities |
+| **No timestamp needed** | SF no FiLM (baseline) | Does not consume day-of-year input; reaches 0.875 |
+| **Lightweight / edge** | DINOv3 ViT-S/16 | 24M params, 0.862 test cos sim |
+| **Minimal data requirements** | SF RGB-only+FiLM | Only needs 3-band S2 RGB + DOY |
+| **Best downstream LULC** | DINOv3 ViT-L/16 | 0.840 own-probe LULC (closest to AEF's 0.856 ceiling) |
+| **Research / ablation** | SF frozen+FiLM (hilr), SF from-scratch+FiLM | Alternative training strategies for comparison against the reinit variant |
 
 ### Architecture overview
 
@@ -145,7 +224,7 @@ Primitives are fused via permutation-invariant cross-attention (SetFusion).
 
 **SegFormer models** use 4 separate MiT-B2 encoders processing each modality's raw bands natively (9ch S2-L1C, 9ch S2-L2A, 2ch S1, 1ch DEM), with channel concatenation fusion.
 
-All models use **FiLM temporal conditioning** (day-of-year modulation) except the ISPRS baseline.
+All models use **FiLM temporal conditioning** (day-of-year modulation) except the no-FiLM baseline.
 
 ### Key findings
 
@@ -168,40 +247,9 @@ All models use **FiLM temporal conditioning** (day-of-year modulation) except th
 
 ---
 
-## Quickstart
+## Multi-temporal averaging
 
-```bash
-pip install betaearth
-```
-
-```python
-from betaearth import BetaEarth
-
-model = BetaEarth.from_pretrained()  # default: robust variant
-# BetaEarth(params=104.8M, device=cuda)
-
-# All inputs are raw (unnormalised) — preprocessing is handled internally
-embedding = model.predict(
-    s2_l2a=s2_l2a,   # (9, H, W) uint16 DN (~0-10000)
-    s2_l1c=s2_l1c,   # (9, H, W) uint16 DN (~0-10000)
-    s1=s1,            # (2, H, W) float32 linear power
-    dem=dem,          # (1, H, W) float32 elevation in meters
-    doy=182,          # day of year (1-366)
-)
-# embedding: (H, W, 64) float32 numpy array, L2-normalised per pixel
-```
-
-Any modality can be omitted — the model handles missing inputs via zeroed features:
-
-```python
-# S2-only (no S1, no DEM)
-emb = model.predict(s2_l2a=s2_l2a, doy=182)
-
-# S2 + DEM, no S1
-emb = model.predict(s2_l2a=s2_l2a, dem=dem, doy=182)
-```
-
-### Multi-temporal averaging
+Build an annual mosaic by predicting each scene separately and averaging the L2-normalised outputs — saturates at ~4 observations per pixel:
 
 ```python
 import numpy as np
@@ -211,10 +259,11 @@ for s2, s1, doy in zip(s2_timeseries, s1_timeseries, doys):
     pred = model.predict(s2_l2a=s2, s1=s1, dem=dem, doy=doy)
     preds.append(pred)
 
-# Simple averaging — saturates at ~4 observations
 annual = np.mean(preds, axis=0)
 annual /= np.linalg.norm(annual, axis=-1, keepdims=True)
 ```
+
+(`betaearth-generate` and the Streamlit demo wrap this pattern with cloud masking, seasonal balancing, and a provenance manifest.)
 
 ---
 
@@ -236,7 +285,7 @@ All input data should be stored as raw values. Normalisation happens inside the 
 - **S1 RTC:** linear power (float32, ~0-200), log-transformed internally
 - **COP-DEM:** pre-normalised to [0, 1] before passing to the model
 
-**Important:** S2 band order must follow Major TOM convention: `[B02, B03, B04, B08, B05, B06, B07, B11, B12]` (10m bands first, then 20m).
+**Important:** S2 bands must be ordered `[B02, B03, B04, B08, B05, B06, B07, B11, B12]` (10 m bands first, then 20 m) — the order BetaEarth was trained with.
 
 ---
 
@@ -249,6 +298,8 @@ All input data should be stored as raw values. Normalisation happens inside the 
   year      = {2026}
 }
 ```
+
+If using BetaEarth embeddings in research, also cite AlphaEarth Foundations ([arXiv:2507.22291](https://arxiv.org/abs/2507.22291)).
 
 ---
 

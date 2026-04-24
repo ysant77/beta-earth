@@ -16,5 +16,5 @@ Usage:
 
 from .modeling_betaearth import BetaEarth
 
-__version__ = "0.2.3"
+__version__ = "0.2.5"
 __all__ = ["BetaEarth"]
