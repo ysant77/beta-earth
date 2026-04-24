@@ -40,7 +40,7 @@ pip install betaearth
 ```python
 from betaearth import BetaEarth
 
-model = BetaEarth.from_pretrained()  # default: robust curriculum variant
+model = BetaEarth.from_pretrained()  # default: curriculum flagship (HF repo: betaearth-segformer-film-robust)
 
 # Any modality can be omitted — the curriculum model handles missing inputs.
 # predict() tiles internally (224 px tile, 112 px overlap, trapezoidal blend),
@@ -72,7 +72,7 @@ Output is `(H, W, 64) float32`, L2-normalised per pixel. `H` and `W` can be anyt
 ### Input gotchas
 
 - **S2 band order matters.** The 10 m bands come first, then 20 m: `[B02, B03, B04, B08, B05, B06, B07, B11, B12]`. Any other order silently produces garbage embeddings. If you fetch from a STAC source that returns bands in their native order (`B01, B02, …`), you must reorder before passing in.
-- **L1C and L2A are NOT interchangeable.** They are handled by separate encoders and represent distinct processing levels (top-of-atmosphere vs surface reflectance). The default **curriculum (flagship)** model handles any subset (single L1C, single L2A, both, or neither) gracefully. The **peak-quality** variants (`segformer-film-reinit`, `segformer-film-hilr`, etc.) were trained with **L1C + L2A jointly** and drop ~32 % cos sim if only one processing level is provided.
+- **L1C and L2A are NOT interchangeable.** They are handled by separate encoders and represent distinct processing levels (top-of-atmosphere vs surface reflectance). The default **curriculum (flagship)** model handles any subset (single L1C, single L2A, both, or neither) gracefully. The **peak-quality** variants (`betaearth-segformer-film` = reinit, `betaearth-segformer-film-hilr`, `betaearth-segformer-film-scratch`) were trained with **L1C + L2A jointly** and drop ~32 % cos sim if only one processing level is provided.
 - **Raw DN values, not reflectance.** S2 normalisation happens inside the model — pass the uint16 DN as-is.
 - **S1 must be linear power, not dB.** Planetary Computer's `sentinel-1-rtc` collection returns linear power by default. If you have GRD-dB data (e.g. from SNAP), convert first: `linear = 10 ** (db / 10)`. Typical linear-power magnitudes are ~0.01–200; `predict()` handles the dB conversion and clipping internally.
 - **DEM in metres, not pre-normalised.** Pass the raw elevation array (COP-DEM GLO-30 output). `predict()` applies per-input min-max rescaling internally. If you already have DEM rescaled to `[0, 1]`, pass `normalise=False` to `predict()`.
@@ -230,7 +230,7 @@ All models use **FiLM temporal conditioning** (day-of-year modulation) except th
 
 - **Temporal conditioning as spectral compensation:** FiLM importance scales inversely with spectral access — RGB-only (22pp) > DINOv3 (18pp) > SegFormer scratch (14pp) > frozen SegFormer (5pp).
 - **Multi-temporal averaging** of 4+ observations improves emulation by up to +13pp over single timestamps, with the benefit biome-dependent (gap-fill wins in boreal regions; S2-only wins in arid/temperate).
-- Predicted embeddings retain **97% of downstream LULC classification accuracy** and are robust to **32x compression**.
+- Predicted embeddings retain **97% of downstream LULC classification accuracy** (own-probe linear probe on IO-LULC) across all full-spectrum variants.
 
 ---
 
@@ -273,9 +273,9 @@ All training data is from the [Major TOM](https://huggingface.co/Major-TOM) comm
 
 | Dataset | Description |
 |---|---|
-| [Major-TOM/Core-S2-L2A](https://huggingface.co/datasets/Major-TOM/Core-S2-L2A) | Sentinel-2 L2A imagery |
-| [Major-TOM/Core-S2-L1C](https://huggingface.co/datasets/Major-TOM/Core-S2-L1C) | Sentinel-2 L1C imagery |
-| [Major-TOM/Core-S1-RTC](https://huggingface.co/datasets/Major-TOM/Core-S1-RTC) | Sentinel-1 RTC imagery |
+| [Major-TOM/Core-S2L2A](https://huggingface.co/datasets/Major-TOM/Core-S2L2A) | Sentinel-2 L2A imagery |
+| [Major-TOM/Core-S2L1C](https://huggingface.co/datasets/Major-TOM/Core-S2L1C) | Sentinel-2 L1C imagery |
+| [Major-TOM/Core-S1RTC](https://huggingface.co/datasets/Major-TOM/Core-S1RTC) | Sentinel-1 RTC imagery |
 | [Major-TOM/Core-AlphaEarth-Embeddings](https://huggingface.co/datasets/Major-TOM/Core-AlphaEarth-Embeddings) | AEF target embeddings |
 
 ### Data normalisation
@@ -283,7 +283,7 @@ All training data is from the [Major TOM](https://huggingface.co/Major-TOM) comm
 All input data should be stored as raw values. Normalisation happens inside the model:
 - **S2 L1C/L2A:** uint16 DN (0-10000+), divided by 10000 internally
 - **S1 RTC:** linear power (float32, ~0-200), log-transformed internally
-- **COP-DEM:** pre-normalised to [0, 1] before passing to the model
+- **COP-DEM:** raw elevation in metres (float32, COP-DEM GLO-30 range ~-500 to 9000), min-max rescaled internally (pass `normalise=False` to `predict()` if your DEM is already in `[0, 1]`)
 
 **Important:** S2 bands must be ordered `[B02, B03, B04, B08, B05, B06, B07, B11, B12]` (10 m bands first, then 20 m) — the order BetaEarth was trained with.
 
