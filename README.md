@@ -2,12 +2,12 @@
 
 
 [![Preprint PDF](https://img.shields.io/badge/Preprint-PDF-b31b1b.svg)](docs/beta_earth_preprint.pdf)
-[![License: CC BY 4.0](https://img.shields.io/badge/License-CC_BY_4.0-lightgrey.svg)](https://creativecommons.org/licenses/by/4.0/)
-[![Dataset](https://img.shields.io/badge/🤗-Major_TOM-yellow)](https://huggingface.co/Major-TOM)
 [![Browser Demo](https://img.shields.io/badge/🤗-Browser_Demo-ff9d00)](https://huggingface.co/spaces/asterisk-labs/betaearth)
-[![ISPRS 2026](https://img.shields.io/badge/ISPRS-2026-blue)](https://www.isprs.org)
+[![YouTube Views](https://img.shields.io/youtube/views/1jfJjXWmoto?style=flat&logo=youtube&logoColor=white)](https://www.youtube.com/watch?v=1jfJjXWmoto)
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/asterisk-labs/beta-earth/blob/main/examples/demo.ipynb)
 [![PyPI](https://img.shields.io/pypi/v/betaearth)](https://pypi.org/project/betaearth/)
+[![Dataset](https://img.shields.io/badge/🤗-Training_Data-yellow)](https://huggingface.co/Major-TOM)
+[![License: CC BY 4.0](https://img.shields.io/badge/License-CC_BY_4.0-lightgrey.svg)](https://creativecommons.org/licenses/by/4.0/)
 
 **Embedding Sentinel-2 and Sentinel-1 with a Little Help of AlphaEarth**
 
@@ -286,6 +286,10 @@ All input data should be stored as raw values. Normalisation happens inside the 
 - **COP-DEM:** raw elevation in metres (float32, COP-DEM GLO-30 range ~-500 to 9000), min-max rescaled internally (pass `normalise=False` to `predict()` if your DEM is already in `[0, 1]`)
 
 **Important:** S2 bands must be ordered `[B02, B03, B04, B08, B05, B06, B07, B11, B12]` (10 m bands first, then 20 m) — the order BetaEarth was trained with.
+
+## BetaEarth on Satellite-Image-Deep-Learning
+You can watch the episode about BetaEarth here:
+[![Watch the video](https://img.youtube.com/vi/1jfJjXWmoto/maxresdefault.jpg)](https://www.youtube.com/watch?v=1jfJjXWmoto)
 
 ---
 
